@@ -45,14 +45,18 @@ public sealed class Store(IConfiguration cfg)
         Run(c,"INSERT INTO check_history(source_id,at_utc,status,price,duration_ms) VALUES($id,$at,$s,$p,$ms)",("$id",id),("$at",DateTimeOffset.UtcNow.ToString("O")),("$s",result.Status),("$p",result.Price),("$ms",elapsedMs));
         Run(c,"DELETE FROM check_history WHERE at_utc < $cutoff",("$cutoff",DateTimeOffset.UtcNow.AddDays(-90).ToString("O")));
     }
-    public object Metrics(int days)
+    public object Metrics(int days, long? itemId = null)
     {
         days = Math.Clamp(days, 1, 90);
         var cutoff = DateTimeOffset.UtcNow.AddDays(-days);
         using var c = Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = "SELECT source_id,at_utc,status,duration_ms FROM check_history WHERE at_utc >= $cutoff ORDER BY source_id,at_utc,id";
+        // Keep orphaned history in global metrics. A product can only claim history
+        // whose source still has a known product association; never infer it from names.
+        const string productFilter = " AND ($itemId IS NULL OR source_id IN (SELECT id FROM sources WHERE item_id=$itemId))";
+        cmd.CommandText = "SELECT source_id,at_utc,status,duration_ms FROM check_history WHERE at_utc >= $cutoff" + productFilter + " ORDER BY source_id,at_utc,id";
         cmd.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+        cmd.Parameters.AddWithValue("$itemId", Val(itemId));
         var checks = new List<(long SourceId,DateTimeOffset At,string Status,long Duration)>();
         using (var r = cmd.ExecuteReader())
             while (r.Read()) checks.Add((r.GetInt64(0), DateTimeOffset.Parse(r.GetString(1)), r.GetString(2), r.GetInt64(3)));
@@ -64,8 +68,9 @@ public sealed class Store(IConfiguration cfg)
         var observations = checks.Select(x => (x.SourceId, x.At, x.Status, Detailed: true)).ToList();
         using (var eventCmd = c.CreateCommand())
         {
-            eventCmd.CommandText = "SELECT source_id,at_utc,message FROM events WHERE at_utc >= $cutoff AND source_id IS NOT NULL AND level IN ('info','warning') ORDER BY source_id,at_utc,id";
+            eventCmd.CommandText = "SELECT source_id,at_utc,message FROM events WHERE at_utc >= $cutoff AND source_id IS NOT NULL AND level IN ('info','warning')" + productFilter + " ORDER BY source_id,at_utc,id";
             eventCmd.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+            eventCmd.Parameters.AddWithValue("$itemId", Val(itemId));
             using var r = eventCmd.ExecuteReader();
             while (r.Read())
             {
@@ -89,8 +94,9 @@ public sealed class Store(IConfiguration cfg)
         }
 
         using var alertCmd = c.CreateCommand();
-        alertCmd.CommandText = "SELECT COUNT(*) FROM events WHERE at_utc >= $cutoff AND level='alert' AND (message LIKE 'Push accepted%' OR message LIKE 'Reminder push accepted%')";
+        alertCmd.CommandText = "SELECT COUNT(*) FROM events WHERE at_utc >= $cutoff AND level='alert' AND (message LIKE 'Push accepted%' OR message LIKE 'Reminder push accepted%')" + productFilter;
         alertCmd.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+        alertCmd.Parameters.AddWithValue("$itemId", Val(itemId));
         var pushAlerts = Convert.ToInt32(alertCmd.ExecuteScalar());
 
         var restocks = new List<(long SourceId,DateTimeOffset At,double Minutes,bool Historical)>();

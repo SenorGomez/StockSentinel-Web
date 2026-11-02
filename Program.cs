@@ -58,7 +58,7 @@ string? ValidateSource(NewSource x,Store s,IConfiguration config){
 app.MapPost("/api/sources",(NewSource x,Store s,IConfiguration c)=>{var error=ValidateSource(x,s,c);return error is not null?Results.BadRequest(error):Results.Ok(new{id=s.AddSource(x)});});
 app.MapPut("/api/sources/{id:long}",(long id,NewSource x,Store s,IConfiguration c)=>{var error=ValidateSource(x,s,c);return error is not null?Results.BadRequest(error):s.UpdateSource(id,x)?Results.Ok():Results.NotFound();});
 app.MapDelete("/api/sources/{id:long}",(long id,Store s)=>{s.DeleteSource(id);return Results.Ok();});
-app.MapGet("/api/metrics",(Store s,int? days)=>s.Metrics(days??7));
+app.MapGet("/api/metrics",(Store s,int? days,long? itemId)=>s.Metrics(days??7,itemId));
 app.MapGet("/api/events",(Store s,int? limit)=>s.Events(limit??150));
 app.MapPost("/api/sources/{id:long}/check",async (long id,Store s,MonitorEngine m,CancellationToken ct)=>s.GetSource(id) is null?Results.NotFound():Results.Ok(await m.Check(id,ct)));
 app.MapGet("/api/push/key",(PushNotifications push)=>Results.Ok(new {publicKey=push.PublicKey,subscriptions=push.Count()}));

@@ -24,11 +24,10 @@ if ! ssh "$PI_SSH" "! ss -ltn | grep -Eq '(^|[[:space:]])(127[.]0[.]0[.]1:|0[.]0
 fi
 
 echo "==> Publishing .NET 10 for 32-bit Raspberry Pi OS (linux-arm)"
-dotnet publish -c Release -r linux-arm --self-contained true -p:PublishSingleFile=true -o ./publish
-
 TMPDIR_LOCAL="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_LOCAL"' EXIT
-tar -C publish -czf "$TMPDIR_LOCAL/stocksentinel.tgz" .
+dotnet publish StockSentinel.Web.csproj -c Release -r linux-arm --self-contained true -p:PublishSingleFile=true -o "$TMPDIR_LOCAL/publish"
+tar -C "$TMPDIR_LOCAL/publish" -czf "$TMPDIR_LOCAL/stocksentinel.tgz" .
 
 REMOTE_DIR="$(ssh "$PI_SSH" 'mktemp -d "$HOME/stocksentinel-deploy.XXXXXX"')"
 scp "$TMPDIR_LOCAL/stocksentinel.tgz" "$PI_SSH:$REMOTE_DIR/stocksentinel.tgz"
