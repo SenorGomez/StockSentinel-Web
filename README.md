@@ -9,6 +9,7 @@ StockSentinel monitors configured product listings and JSON endpoints, records a
 ## Features
 
 - **Products and sources:** Configure products, maximum GBP prices, enabled status, HTTPS sources and polling intervals from the dashboard.
+- **Source templates:** Export reusable source settings as local JSON files and preview imports into an existing or new product. Imported sources start disabled.
 - **HTML detection:** AngleSharp CSS selectors for available/unavailable indicators and price extraction.
 - **REST / JSON detection:** Configurable paths for identity, availability, price, currency and purchase URL; supports collection matching for JSON responses containing multiple items.
 - **Monitoring:** Background checks, manual **Check now**, recent activity, status and next-check information, with SQLite persistence.
@@ -164,6 +165,35 @@ Example detector configuration:
 These paths are **examples, not a guaranteed working retailer integration**. Validate them against current responses. In particular, a result at index `[0]` may not be the intended product; `expectedId` helps prevent false matches. A positive API response must still be checked against the retailer's actual ordering flow.
 
 The JSON detector also supports collection-style responses and can report individually checked items using configured labels (for example, pickup locations). Consult the source and tests for the exact supported collection configuration fields; do not assume full JSONPath filter syntax.
+
+## Sharing source templates
+
+Choose **Export Template** on a source to download a versioned `.json` file. On the receiving installation, choose **Sources → Import Template**, select the local file, review/edit the settings and choose an existing product or create a new one with a local maximum price. Confirm with **Import template**. Matching source names or URLs produce a duplicate warning; importing always creates another source and never overwrites one. All imported sources start disabled, including incomplete HTML configurations. Run **Check now**, finish any missing rules and verify results before enabling polling.
+
+Templates share source configuration only: names, request/purchase URLs, polling intervals and HTML or JSON detection rules. They exclude database/product IDs, enabled state, history, runtime status, product prices, credentials and notification settings. Files are limited to 64 KiB and version 1; unknown fields and unsupported detector rules are rejected. Validation uses the receiving installation's minimum polling interval.
+
+Example version 1 template (a public example endpoint, not a working retailer integration):
+
+```json
+{
+  "format": "stocksentinel-source",
+  "version": 1,
+  "source": {
+    "name": "Example retailer",
+    "url": "https://example.com/api/products?id=sample-sku",
+    "intervalMinutes": 15,
+    "adapter": "rest-json",
+    "jsonConfig": {
+      "idPath": "$.product.id",
+      "expectedId": "sample-sku",
+      "availablePath": "$.product.available",
+      "purchaseUrl": "https://example.com/products/sample-sku"
+    }
+  }
+}
+```
+
+Share the downloaded file directly with someone you trust; templates are not uploaded to a marketplace or fetched from remote URLs. The selected file is sent to your own StockSentinel installation for validation. Review the JSON before sharing or importing: source names, URLs and rules can contain private information, and automated checks cannot recognise every secret. Export/import refuse URL credentials/fragments, recognisable credential strings, unknown JSON rule fields and query parameters outside a conservative public allowlist (for example `q`, `limit`, `id`, `sku`, `parts` and `locale`). If blocked, remove private values from a separate copy of the source; do not share authenticated or signed URLs. Import validation does not contact the retailer. A template does not prove that its detector is correct or its URLs are trustworthy.
 
 ## Web Push on iPhone
 

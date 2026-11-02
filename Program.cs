@@ -44,19 +44,29 @@ app.MapPut("/api/items/{id:long}",(long id,NewItem i,Store s)=>{
 app.MapGet("/api/sources",(Store s)=>s.Sources());
 string? ValidateSource(NewSource x,Store s,IConfiguration config){
     if(s.Items().All(i=>i.Id!=x.ItemId))return "Product not found";
-    if(string.IsNullOrWhiteSpace(x.Name)||!Uri.TryCreate(x.Url,UriKind.Absolute,out var uri)||uri.Scheme!="https"||uri.UserInfo.Length>0)return "Use a valid HTTPS source URL";
-    if(x.IntervalMinutes<Math.Max(3,config.GetValue("Sentinel:MinimumPollMinutes",3))||x.IntervalMinutes>1440)return "Invalid polling interval";
-    if(x.Adapter is not ("html" or "rest-json"))return "Unsupported adapter";
-    if(x.Adapter=="rest-json"){
-        if(string.IsNullOrWhiteSpace(x.JsonConfig))return "REST JSON rules required";
-        try {JsonStockDetector.Validate(x.JsonConfig);}catch(Exception e){return "Invalid JSON rules: "+e.Message;}
-    }
-    if(x.Adapter=="html"&&x.Enabled&&new[]{x.AvailableSelector,x.UnavailableSelector,x.PriceSelector,x.PricePattern}.Any(string.IsNullOrWhiteSpace))return "Configure all detection rules before enabling source";
-    if(x.Adapter=="html"&&!string.IsNullOrWhiteSpace(x.PricePattern)){try{_=new System.Text.RegularExpressions.Regex(x.PricePattern,System.Text.RegularExpressions.RegexOptions.None,TimeSpan.FromMilliseconds(200));}catch{return "Invalid price regex";}if(!x.PricePattern.Contains("?<price>"))return "Price regex must include named group (?<price>...)";}
-    return null;
+    return SourceTemplates.ValidateSettings(x,config);
 }
 app.MapPost("/api/sources",(NewSource x,Store s,IConfiguration c)=>{var error=ValidateSource(x,s,c);return error is not null?Results.BadRequest(error):Results.Ok(new{id=s.AddSource(x)});});
 app.MapPut("/api/sources/{id:long}",(long id,NewSource x,Store s,IConfiguration c)=>{var error=ValidateSource(x,s,c);return error is not null?Results.BadRequest(error):s.UpdateSource(id,x)?Results.Ok():Results.NotFound();});
+app.MapGet("/api/sources/{id:long}/template",(long id,Store s,IConfiguration config)=>{
+    var source=s.GetSource(id);if(source is null)return Results.NotFound();
+    try{return Results.File(SourceTemplates.Bytes(SourceTemplates.Export(source,config)),"application/json","stocksentinel-source-template.json");}
+    catch(ArgumentException ex){return Results.BadRequest(ex.Message);}
+});
+app.MapPost("/api/source-templates/preview",(System.Text.Json.JsonElement document,Store s,IConfiguration config)=>{
+    try{
+        var template=SourceTemplates.Read(document,config);
+        var source=SourceTemplates.ToSource(template,0);
+        return Results.Ok(new{source,duplicates=s.Sources().Where(x=>SourceTemplates.IsDuplicate(x,source)).Select(x=>x.Name)});
+    }catch(ArgumentException ex){return Results.BadRequest(ex.Message);}
+});
+app.MapPost("/api/source-templates/import",(TemplateImport body,Store s,IConfiguration config)=>{
+    try{
+        var source=SourceTemplates.ToSource(SourceTemplates.Read(body.Template,config),body.ItemId);
+        var error=ValidateSource(source,s,config);
+        return error is not null?Results.BadRequest(error):Results.Ok(new{id=s.AddSource(source)});
+    }catch(ArgumentException ex){return Results.BadRequest(ex.Message);}
+});
 app.MapDelete("/api/sources/{id:long}",(long id,Store s)=>{s.DeleteSource(id);return Results.Ok();});
 app.MapGet("/api/metrics",(Store s,int? days,long? itemId)=>s.Metrics(days??7,itemId));
 app.MapGet("/api/events",(Store s,int? limit)=>s.Events(limit??150));
