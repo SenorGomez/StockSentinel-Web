@@ -1,0 +1,21 @@
+[Unit]
+Description=StockSentinel Monitoring Dashboard
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=simple
+User=stocksentinel
+Group=stocksentinel
+WorkingDirectory=/opt/stocksentinel
+Environment=ASPNETCORE_URLS=http://0.0.0.0:8080
+EnvironmentFile=/etc/stocksentinel.env
+ExecStart=/opt/stocksentinel/StockSentinel.Web
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/stocksentinel/data
+ProtectHome=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

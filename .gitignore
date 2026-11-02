@@ -1,0 +1,43 @@
+# .NET build outputs
+bin/
+obj/
+publish/
+TestResults/
+*.user
+*.suo
+
+# IDE and OS
+.vs/
+.vscode/
+.idea/
+.DS_Store
+
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# Local configuration and secrets
+appsettings.json
+appsettings.*.json
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+
+# Local deployment settings
+deploy.local.sh
+
+# Temporary files and backups
+*.bak
+*.backup
+*.tmp
+*.swp
