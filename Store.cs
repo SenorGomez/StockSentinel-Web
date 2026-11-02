@@ -19,6 +19,18 @@ public sealed class Store(IConfiguration cfg)
         CREATE TABLE IF NOT EXISTS alert_reminders(source_id INTEGER PRIMARY KEY, first_sent_utc TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 1);
         """;cmd.ExecuteNonQuery();
         using var migration=c.CreateCommand();migration.CommandText="PRAGMA table_info(sources)";using var columns=migration.ExecuteReader();bool exists=false;while(columns.Read())if(columns.GetString(1)=="json_config")exists=true;columns.Close();if(!exists)Run(c,"ALTER TABLE sources ADD COLUMN json_config TEXT");
+        // Keep an allocation high-water mark without rebuilding existing sources.
+        // Legacy deleted IDs can survive only in history or notification tables.
+        Run(c,"""
+        CREATE TABLE IF NOT EXISTS source_id_sequence(singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_id INTEGER NOT NULL CHECK(last_id>=0));
+        INSERT INTO source_id_sequence(singleton,last_id)
+        SELECT 1,MAX(0,COALESCE(MAX(id),0)) FROM (
+            SELECT id FROM sources UNION ALL SELECT source_id FROM events
+            UNION ALL SELECT source_id FROM check_history UNION ALL SELECT source_id FROM notifications
+            UNION ALL SELECT source_id FROM alert_reminders
+        ) WHERE true
+        ON CONFLICT(singleton) DO UPDATE SET last_id=MAX(last_id,excluded.last_id);
+        """);
     }
     static object Val(object? value) => value ?? DBNull.Value;
     static void Run(SqliteConnection c,string sql,params (string,object?)[] args){using var cmd=c.CreateCommand();cmd.CommandText=sql;foreach(var (k,v) in args)cmd.Parameters.AddWithValue(k,Val(v));cmd.ExecuteNonQuery();}
@@ -33,7 +45,17 @@ public sealed class Store(IConfiguration cfg)
     public bool UpdateItem(long id,NewItem i){using var c=Open();using var q=c.CreateCommand();q.CommandText="UPDATE items SET name=$n,max_price=$p,enabled=$e WHERE id=$id";q.Parameters.AddWithValue("$id",id);q.Parameters.AddWithValue("$n",i.Name);q.Parameters.AddWithValue("$p",i.MaxPriceGbp);q.Parameters.AddWithValue("$e",i.Enabled?1:0);return q.ExecuteNonQuery()>0;}
     public List<Source> Sources(){using var c=Open();using var q=c.CreateCommand();q.CommandText="SELECT id,item_id,name,url,interval_mins,enabled,adapter,available_selector,unavailable_selector,price_selector,price_pattern,availability_text,unavailability_text,status,last_detail,last_checked,next_check,fail_count,json_config FROM sources ORDER BY id";using var r=q.ExecuteReader();var list=new List<Source>();while(r.Read()){string? S(int n)=>r.IsDBNull(n)?null:r.GetString(n);list.Add(new(r.GetInt64(0),r.GetInt64(1),r.GetString(2),r.GetString(3),r.GetInt32(4),r.GetInt64(5)!=0,r.GetString(6),S(7),S(8),S(9),S(10),S(11),S(12),r.GetString(13),S(14),S(15),S(16),r.GetInt32(17),S(18)));}return list;}
     public Source? GetSource(long id)=>Sources().FirstOrDefault(x=>x.Id==id);
-    public long AddSource(NewSource s){using var c=Open();using var q=c.CreateCommand();q.CommandText="""INSERT INTO sources(item_id,name,url,interval_mins,enabled,adapter,available_selector,unavailable_selector,price_selector,price_pattern,availability_text,unavailability_text,json_config) VALUES($i,$n,$u,$m,$e,$a,$av,$un,$ps,$pp,$at,$ut,$jc)""";BindSource(q,s);q.ExecuteNonQuery();return LastInsertedId(c);}
+    public long AddSource(NewSource s)
+    {
+        using var c=Open();using var transaction=c.BeginTransaction();
+        using var allocate=c.CreateCommand();allocate.Transaction=transaction;
+        allocate.CommandText="UPDATE source_id_sequence SET last_id=last_id+1 WHERE singleton=1 AND last_id<9223372036854775807 RETURNING last_id";
+        var id=allocate.ExecuteScalar() is long allocated?allocated:throw new InvalidOperationException("Source ID sequence is unavailable or exhausted");
+        using var q=c.CreateCommand();q.Transaction=transaction;
+        q.CommandText="""INSERT INTO sources(id,item_id,name,url,interval_mins,enabled,adapter,available_selector,unavailable_selector,price_selector,price_pattern,availability_text,unavailability_text,json_config) VALUES($id,$i,$n,$u,$m,$e,$a,$av,$un,$ps,$pp,$at,$ut,$jc)""";
+        q.Parameters.AddWithValue("$id",id);BindSource(q,s);q.ExecuteNonQuery();
+        transaction.Commit();return id;
+    }
     public bool UpdateSource(long id,NewSource s){using var c=Open();using var q=c.CreateCommand();q.CommandText="""UPDATE sources SET item_id=$i,name=$n,url=$u,interval_mins=$m,enabled=$e,adapter=$a,available_selector=$av,unavailable_selector=$un,price_selector=$ps,price_pattern=$pp,availability_text=$at,unavailability_text=$ut,json_config=$jc,next_check=NULL,status='Unknown' WHERE id=$id""";BindSource(q,s);q.Parameters.AddWithValue("$id",id);return q.ExecuteNonQuery()>0;}
     static void BindSource(SqliteCommand q,NewSource s){foreach(var (k,v) in new (string,object?)[]{("$i",s.ItemId),("$n",s.Name),("$u",s.Url),("$m",s.IntervalMinutes),("$e",s.Enabled?1:0),("$a",s.Adapter),("$av",s.AvailableSelector),("$un",s.UnavailableSelector),("$ps",s.PriceSelector),("$pp",s.PricePattern),("$at",s.AvailabilityText),("$ut",s.UnavailabilityText),("$jc",s.JsonConfig)})q.Parameters.AddWithValue(k,Val(v));}
     public void DeleteSource(long id){using var c=Open();Run(c,"DELETE FROM sources WHERE id=$id",("$id",id));Run(c,"DELETE FROM notifications WHERE source_id=$id",("$id",id));Run(c,"DELETE FROM alert_reminders WHERE source_id=$id",("$id",id));}

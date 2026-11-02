@@ -22,6 +22,8 @@ public sealed class PublishExclusionTests
             var excluded = new[] { "tests/StockSentinel.Tests/bin/Release/net10.0/tests/old.json",
                 "tests/StockSentinel.Tests/obj/project.assets.json", "tests/Example.cs",
                 "publish/publish/old.runtimeconfig.json", "publish/old.cs", "publish/wwwroot/index.html",
+                "data/push-vapid.json", "data/push-subscriptions.json", "data/sentinel.db", "data/sentinel.db-wal",
+                "data/nested/secrets.config", "data/nested/private.key", "data/ignored.cs", "data/resource.resx",
                 "nested/bin/old.json", "nested/obj/old.json", publishDir + "previous.json" };
             var included = new[] { "wwwroot/index.html", "wwwroot/app.js", "wwwroot/icon.png", "wwwroot/sw.js",
                 "wwwroot/manifest.webmanifest", "appsettings.json", "Program.cs" };
