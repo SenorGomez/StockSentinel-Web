@@ -15,4 +15,14 @@
     <None Remove="data/**" />
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
+  <!-- Preserve native sidecars when the SDK skips incremental bundle generation.
+       Otherwise its inferred outputs can omit SQLite and publish cleanup deletes it. -->
+  <Target Name="KeepNativeFilesExternal" BeforeTargets="_ComputeFilesToBundle"
+          Condition="'$(PublishSingleFile)' == 'true' And '$(IncludeNativeLibrariesForSelfExtract)' != 'true' And '$(IncludeAllContentForSelfExtract)' != 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.AssetType)' == 'native'">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>
