@@ -7,9 +7,9 @@ Type=simple
 User=stocksentinel
 Group=stocksentinel
 WorkingDirectory=/opt/stocksentinel
-Environment=ASPNETCORE_URLS=http://0.0.0.0:8080
+Environment=DOTNET_ENVIRONMENT=Production
 EnvironmentFile=/etc/stocksentinel.env
-ExecStart=/opt/stocksentinel/StockSentinel.Web
+ExecStart=/opt/stocksentinel/current/StockSentinel.Web --contentRoot /opt/stocksentinel/current --urls http://127.0.0.1:5070
 Restart=always
 RestartSec=10
 NoNewPrivileges=true
