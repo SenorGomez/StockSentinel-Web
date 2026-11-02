@@ -81,6 +81,22 @@ public sealed class MonitoringTimeoutTests : IDisposable
         if(stage=="body")Assert.True(stream.Disposed);
     }
 
+    [Theory]
+    [InlineData("html")]
+    [InlineData("rest-json")]
+    public async Task Redirects_are_rejected_without_requesting_the_target(string adapter)
+    {
+        var id=Add("first",adapter);var requests=0;
+        using var client=new HttpClient(new Handler((_,_)=>{
+            requests++;
+            var response=new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location=new Uri("https://127.0.0.1/private");
+            return Task.FromResult(response);
+        }));
+        var result=await Engine(client).Check(id,CancellationToken.None);
+        Assert.Equal("Error",result.Status);Assert.Contains("302",result.Detail);Assert.Equal(1,requests);
+    }
+
     [Fact]
     public async Task HttpClient_cancellation_is_recorded_and_uses_existing_backoff()
     {

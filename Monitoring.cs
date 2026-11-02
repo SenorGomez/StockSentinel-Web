@@ -129,21 +129,6 @@ public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNot
         return new("Available",price,"Availability and GBP price matched on retailer HTML");
     }
 }
-public static class NetworkSafety
-{
-    public static async Task<bool> IsPublicHost(Uri u,CancellationToken ct)
-    {
-        if(u.HostNameType!=UriHostNameType.Dns||u.Host.Equals("localhost",StringComparison.OrdinalIgnoreCase))return false;
-        var ips=await System.Net.Dns.GetHostAddressesAsync(u.DnsSafeHost,ct);
-        if(ips.Length==0)return false;
-        return ips.All(ip=>{
-            if(System.Net.IPAddress.IsLoopback(ip))return false;
-            var b=ip.GetAddressBytes();
-            if(ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork)return b[0] is not (0 or 10 or 127) && !(b[0]==169&&b[1]==254) && !(b[0]==172&&b[1]>=16&&b[1]<=31) && !(b[0]==192&&b[1]==168) && !(b[0]>=224) && !(b[0]==100&&b[1]>=64&&b[1]<=127);
-            return !ip.IsIPv6LinkLocal && !ip.IsIPv6SiteLocal && !ip.IsIPv6Multicast && !ip.Equals(System.Net.IPAddress.IPv6Any) && !(b[0]==0xfc||b[0]==0xfd);
-        });
-    }
-}
 public sealed class PollWorker(Store store,MonitorEngine engine,ILogger<PollWorker> logger):BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
