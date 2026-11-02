@@ -38,10 +38,12 @@ export STOCKSENTINEL_API_KEY="$(openssl rand -hex 32)"
 printf 'Local login key: %s\n' "$STOCKSENTINEL_API_KEY"
 
 dotnet restore
-dotnet run
+ASPNETCORE_ENVIRONMENT=Development dotnet run
 ```
 
 The example configuration uses `http://127.0.0.1:8080`; if you change `Urls` in `appsettings.json`, use the configured address instead. Log in with the generated key.
+
+Development mode permits local HTTP login. Outside Development, authentication cookies require HTTPS. The app trusts only `X-Forwarded-Proto` from the local Caddy proxy at `127.0.0.1`, with one forwarding hop; `ReverseProxy:KnownProxy` can select another loopback address if needed.
 
 The SQLite database is stored under `data/` by default. Both `data/` and the real `appsettings.json` are ignored by Git. **Do not expose the HTTP development endpoint to the internet.**
 

@@ -23,7 +23,8 @@ public sealed class MailNotifier(IConfiguration cfg)
         await client.SendAsync(msg,ct);await client.DisconnectAsync(true,ct);
     }
 }
-public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNotifier mail,PushNotifications push,IConfiguration cfg,ILogger<MonitorEngine> logger)
+public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNotifier mail,PushNotifications push,IConfiguration cfg,ILogger<MonitorEngine> logger,
+    Func<Uri,CancellationToken,Task<bool>>? publicHostCheck = null)
 {
     readonly SemaphoreSlim gate=new(1,1);
     public async Task<CheckResult> Check(long sourceId,CancellationToken ct)
@@ -34,7 +35,16 @@ public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNot
             var item=store.Items().FirstOrDefault(x=>x.Id==s.ItemId);if(item is null)return new("Error",null,"Product not found");
             CheckResult result;
             var watch=System.Diagnostics.Stopwatch.StartNew();
-            try {result=await Fetch(s,ct);}catch(Exception ex) when(ex is not OperationCanceledException){result=new("Error",null,$"{ex.GetType().Name}: {ex.Message}");}
+            try {
+                // HttpClient.Timeout ends at headers with ResponseHeadersRead. Keep
+                // the same deadline through DNS, headers, and all response body reads.
+                using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(TimeSpan.FromSeconds(cfg.GetValue("Sentinel:HttpTimeoutSeconds",20)));
+                result=await Fetch(s,deadline.Token);
+            }
+            catch(OperationCanceledException) when(!ct.IsCancellationRequested){result=new("Error",null,"Monitoring request timed out");}
+            catch(Exception ex) when(ex is not OperationCanceledException){result=new("Error",null,$"{ex.GetType().Name}: {ex.Message}");}
+            ct.ThrowIfCancellationRequested();
             watch.Stop();store.RecordCheck(s.Id,result,watch.ElapsedMilliseconds);
             int fails=result.Status is "Error" or "Unknown"?Math.Min(s.FailCount+1,8):0;
             int minutes=Math.Max(cfg.GetValue("Sentinel:MinimumPollMinutes",3),s.IntervalMinutes);
@@ -71,7 +81,7 @@ public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNot
     async Task<CheckResult> FetchJson(Source s,CancellationToken ct)
     {
         if(!Uri.TryCreate(s.Url,UriKind.Absolute,out var uri)||uri.Scheme!="https")return new("Error",null,"Only HTTPS URLs supported");
-        if(!await NetworkSafety.IsPublicHost(uri,ct))return new("Error",null,"Host must resolve to a public IP");
+        if(!await (publicHostCheck ?? NetworkSafety.IsPublicHost)(uri,ct))return new("Error",null,"Host must resolve to a public IP");
         var client=factory.CreateClient("stock");
         using var request=new HttpRequestMessage(HttpMethod.Get,uri);
         using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
@@ -94,7 +104,7 @@ public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNot
         if(!Uri.TryCreate(s.Url,UriKind.Absolute,out var uri)||uri.Scheme!="https")return new("Error",null,"Only HTTPS URLs are supported");
         if(string.IsNullOrWhiteSpace(s.AvailableSelector)||string.IsNullOrWhiteSpace(s.UnavailableSelector)||string.IsNullOrWhiteSpace(s.PriceSelector)||string.IsNullOrWhiteSpace(s.PricePattern))return new("Unknown",null,"Detection selectors and price pattern must all be configured and tested");
         // Avoid private hosts / SSRF from browser-editable URLs; validate DNS-resolved addresses as well.
-        if(!await NetworkSafety.IsPublicHost(uri,ct))return new("Error",null,"Target must resolve to a public internet IP address");
+        if(!await (publicHostCheck ?? NetworkSafety.IsPublicHost)(uri,ct))return new("Error",null,"Target must resolve to a public internet IP address");
         var client=factory.CreateClient("stock");using var request=new HttpRequestMessage(HttpMethod.Get,uri);using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
         if((int)response.StatusCode is 403 or 429)return new("Error",null,$"Retailer blocked/rate-limited request: HTTP {(int)response.StatusCode}");
         if(!response.IsSuccessStatusCode)return new("Error",null,$"HTTP {(int)response.StatusCode}");
@@ -146,7 +156,11 @@ public sealed class PollWorker(Store store,MonitorEngine engine,ILogger<PollWork
                 {
                     if(!store.Items().Any(i=>i.Id==s.ItemId&&i.Enabled))continue;
                     if(s.NextCheckUtc is not null&&DateTimeOffset.TryParse(s.NextCheckUtc,out var next)&&next>now)continue;
-                    await engine.Check(s.Id,stoppingToken);
+                    try {await engine.Check(s.Id,stoppingToken);}
+                    catch(Exception ex) when(!stoppingToken.IsCancellationRequested){
+                        logger.LogError(ex,"Source {SourceId} check failed",s.Id);
+                        store.Log("error",$"Source check failed: {ex.Message}",s.Id);
+                    }
                 }
             }catch(OperationCanceledException)when(stoppingToken.IsCancellationRequested){break;}
             catch(Exception ex){logger.LogError(ex,"Polling loop failed");store.Log("error",ex.Message);}
