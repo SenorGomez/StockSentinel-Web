@@ -41,3 +41,5 @@ deploy.local.sh
 *.backup
 *.tmp
 *.swp
+
+!appsettings.example.json

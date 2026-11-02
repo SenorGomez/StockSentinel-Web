@@ -1,108 +1,151 @@
-# StockSentinel — self-hosted .NET 10 stock monitoring dashboard
+# StockSentinel
 
-A complete **runnable source implementation** (not a retailer-ready scraper). ASP.NET Core 10 web app plus `BackgroundService`, SQLite-backed products/sources/history, CSS-selectors via AngleSharp, SMTP email alerts via MailKit, and a simple responsive browser interface.
+**Self-hosted stock monitoring dashboard built with ASP.NET Core 10, SQLite and a responsive web interface.**
 
-**Critical:** All retailer adapters require manual validation of their actual public HTML. No live source is pre-enabled. This deliberately prevents false alerts. Some retailers render stock in JavaScript, use regional inventory, CAPTCHA or block bots. Such sites need a separate approved adapter/API; **never treat HTTP 200 or a matching generic “add to basket” string as proof of stock.** Do not circumvent bot protection or ignore retailer terms. The HTTP client does not follow redirects, avoids nonpublic targets, backs off on errors and has a response cap.
+StockSentinel monitors configured product listings and JSON endpoints, records availability history, and sends notifications when a qualifying item becomes available. It is intended for personal, trusted-network deployments—not as a ready-made scraper for every retailer.
+
+> **Important:** Stock signals must be validated against the retailer's actual purchase flow. An HTTP 200 response, an API `orderable` flag, or generic “Add to basket” text does not guarantee that checkout is possible. Respect retailer terms, rate limits and bot protections; do not bypass CAPTCHAs or access controls.
 
 ## Features
 
-- Products (name, maximum GBP price, enabled), editable without redeploy.
-- Sources per product (HTTPS listing, poll minutes, enabled, CSS selectors for available/unavailable and price, GBP price extraction regex), editable without redeploy.
-- Manual **Check now**, automatic checks, dashboard and searchable-by-browser activity view, status + next check information stored in SQLite.
-- Conservative availability: explicit available indicator + extracted price required; ambiguous indicators are `Unknown`; 403/429 is `Error`; unknown never resets notification latch.
-- SMTP email on a verified `Available` transition at or under maximum price, deduplicated per source; re-alert after confirmed unavailable; retries notification on a later positive check when SMTP fails.
-- Test email button and SMTP configuration display (no password disclosure).
-- Password/key protected UI and API, data/logs retained through app upgrades.
+- **Products and sources:** Configure products, maximum GBP prices, enabled status, HTTPS sources and polling intervals from the dashboard.
+- **HTML detection:** AngleSharp CSS selectors for available/unavailable indicators and price extraction.
+- **REST / JSON detection:** Configurable paths for identity, availability, price, currency and purchase URL; supports collection matching for JSON responses containing multiple items.
+- **Monitoring:** Background checks, manual **Check now**, recent activity, status and next-check information, with SQLite persistence.
+- **Conservative results:** Ambiguous or incomplete responses are reported as `Unknown`, not assumed to be in stock. HTTP 403/429 and other failures are handled as errors with backoff.
+- **Notifications:** SMTP email (MailKit) and browser Web Push, with transition-based deduplication and retries when delivery fails.
+- **Authenticated UI:** API-key login and an HttpOnly session cookie. SMTP passwords are not exposed in the dashboard.
+- **Tests and CI:** xUnit tests for JSON detection and a GitHub Actions build/test workflow.
 
-## Local developer setup
+## Requirements
 
-Prerequisites: .NET **10 SDK**. From this directory:
+- .NET 10 SDK for local development and publishing.
+- A writable directory for SQLite data.
+- For the supplied Pi deployment script: a **32-bit ARM Raspberry Pi OS** host, SSH access with `sudo`, `openssl`, `systemd` and Caddy configured on the Pi.
+- A modern browser; HTTPS is required for Web Push on supported devices.
+
+## Local development
+
+Clone the repository and work from its root:
 
 ```bash
-export STOCKSENTINEL_API_KEY="$(openssl rand -hex 24)"
-# print and store that key so you can log in
-printf '%s\n' "$STOCKSENTINEL_API_KEY"
+# Create your local configuration from the supplied sample.
+cp appsettings.example.json appsettings.json
+
+# Generate a local login key. Keep it private.
+export STOCKSENTINEL_API_KEY="$(openssl rand -hex 32)"
+printf 'Local login key: %s\n' "$STOCKSENTINEL_API_KEY"
+
 dotnet restore
 dotnet run
 ```
 
-Open http://127.0.0.1:8080 and sign in with the generated key. Data stored in `data/sentinel.db` (excluded from deployment/git). **Do not expose port 8080 to the public internet.** The sample binds only localhost until explicitly overridden.
+The example configuration uses `http://127.0.0.1:8080`; if you change `Urls` in `appsettings.json`, use the configured address instead. Log in with the generated key.
 
-The web interface uses an HttpOnly 12-hour session cookie. For remote LAN deployment, use an HTTPS reverse proxy or a VPN tunnel (such as Tailscale or WireGuard): the raw HTTP LAN service does **not** encrypt the session cookie. Avoid putting the app on an untrusted network. HTTPS termination is the recommended security improvement before relying on authenticated remote editing.
+The SQLite database is stored under `data/` by default. Both `data/` and the real `appsettings.json` are ignored by Git. **Do not expose the HTTP development endpoint to the internet.**
 
-## Send alerts to Apple iCloud Mail (no new iPhone app)
+If `appsettings.example.json` is not present in your checkout, it must be created from a sanitized configuration before publishing the repository. Never commit a copy containing real addresses, credentials or private paths.
 
-The *recipient* should be your existing iCloud mailbox; you do not need Hide My Email. To send from the Pi, choose an SMTP provider/account you already control. Example using **iCloud SMTP as sender** with an Apple app-specific password:
+### Build and test
+
+```bash
+dotnet build --configuration Release
+dotnet test tests/StockSentinel.Tests/StockSentinel.Tests.csproj --configuration Release
+```
+
+GitHub Actions runs restore, build and tests on pushes and pull requests. CI does not need your Pi SSH configuration, SMTP credentials or runtime database.
+
+## Configuration and credentials
+
+| Setting | Purpose |
+| --- | --- |
+| `appsettings.json` | Local bootstrap settings, including database path and optional SMTP settings; **not committed** |
+| `STOCKSENTINEL_API_KEY` | Required UI/API authentication key; use a strong randomly generated value |
+| `STOCKSENTINEL_SMTP_PASSWORD` | SMTP password, provided via environment rather than source-controlled JSON |
+| `.env` | Optional local **deployment** settings, notably `PI_SSH`; **not committed** |
+| `.env.example` | Safe deployment example that can be committed |
+| `/etc/stocksentinel.env` | Private environment file on the Pi, used by the systemd service |
+
+Product and source configuration is edited through the dashboard. Bootstrap SMTP configuration changes require an application restart.
+
+### Optional SMTP alerts (iCloud example)
+
+Use an SMTP account you control. For iCloud Mail, an Apple app-specific password may be required. Set `STOCKSENTINEL_SMTP_PASSWORD` in the environment, and use settings equivalent to:
 
 ```json
-"Smtp": {
-  "Enabled": true,
-  "Host": "smtp.mail.me.com",
-  "Port": 587,
-  "Security": "StartTls",
-  "Username": "user@example.com",
-  "FromAddress": "user@example.com",
-  "FromName": "StockSentinel",
-  "ToAddress": "user@example.com"
+{
+  "Smtp": {
+    "Enabled": true,
+    "Host": "smtp.mail.me.com",
+    "Port": 587,
+    "Security": "StartTls",
+    "Username": "user@example.com",
+    "FromAddress": "user@example.com",
+    "FromName": "StockSentinel",
+    "ToAddress": "user@example.com"
+  }
 }
 ```
 
-Create an **app-specific password** for Apple Account if required, and set `STOCKSENTINEL_SMTP_PASSWORD` as an environment variable. Do **not** put passwords in browser-editable config, source control or screenshots. For VIP notifications, best to use a distinct sender you control rather than mailing yourself from the same mailbox: self-sent messages and VIP alerts may behave differently. **Test locked-phone notification latency** before treating this as urgent alerting.
+This is a **configuration fragment**, not a complete `appsettings.json`. Replace placeholder addresses locally. Do not commit passwords, actual email addresses or notification credentials. Use **Send test email** before relying on alerts; a successful SMTP send does not guarantee immediate phone notification.
 
-`appsettings.json` is *bootstrap SMTP configuration*, so editing SMTP host or recipient requires restarting; product and retailer config is edited via dashboard and works without restarting. The app shows SMTP settings read-only and includes **Send test email**.
+## Raspberry Pi deployment (32-bit ARM)
 
-## Deploy to Raspberry Pi (64-bit Raspberry Pi OS)
+The included `deploy-pi.sh` publishes a **self-contained `linux-arm` .NET 10 executable**, copies it over SSH and installs/updates the systemd service and local Caddy reverse proxy. This script is designed for the deployment layout below; adapt it before using it on a different host.
 
-Build/publish on a machine with the .NET 10 SDK:
+1. Ensure `appsettings.json` exists locally and contains the intended non-secret settings. Configure your Pi with SSH, `sudo`, Caddy and `openssl`.
+2. Copy the deployment example to a private `.env` file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Set `PI_SSH` in `.env` to your own SSH destination, for example `user@raspberrypi.local`. Alternatively export `PI_SSH` in your shell.
+3. From the repository root, run:
+
+   ```bash
+   ./deploy-pi.sh
+   ```
+
+The script runs the xUnit tests **before** connecting to the Pi. It then publishes with the equivalent of:
 
 ```bash
-dotnet publish -c Release -r linux-arm64 --self-contained true -p:PublishSingleFile=true -o publish
+dotnet publish -c Release -r linux-arm --self-contained true \
+  -p:PublishSingleFile=true -o ./publish
 ```
 
-Copy `publish` to `/opt/stocksentinel` (including `wwwroot`, runtime files and `appsettings.json`). Setup once:
+On the Pi, the installer:
 
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin stocksentinel
-sudo mkdir -p /opt/stocksentinel/data
-sudo chown stocksentinel:stocksentinel /opt/stocksentinel/data
-sudo chmod 750 /opt/stocksentinel/data
-sudo cp deploy/stocksentinel.service /etc/systemd/system/stocksentinel.service
-sudo sh -c 'umask 077; touch /etc/stocksentinel.env'
-# Put STOCKSENTINEL_API_KEY=<long random value> and STOCKSENTINEL_SMTP_PASSWORD=<app-specific password> into /etc/stocksentinel.env
-sudo chmod 600 /etc/stocksentinel.env
-sudo systemctl daemon-reload
-sudo systemctl enable --now stocksentinel
-journalctl -u stocksentinel -f
+- Installs into `/opt/stocksentinel` and runs as the `stocksentinel` system user.
+- Creates `/etc/stocksentinel.env` on first installation and generates a random API key with `openssl rand -hex 32`. **Save the key shown during first deployment securely.**
+- Prompts for a VAPID contact email if `Push__VapidSubject` is not already configured.
+- Preserves `/opt/stocksentinel/data/`, the existing `appsettings.json`, and `/etc/stocksentinel.env` on subsequent deployments.
+- Runs the service on **`127.0.0.1:5070`** and configures Caddy to proxy **`https://stocksentinel.home`** using `tls internal`.
+- Validates the Caddy configuration, restarts the service and checks the local `/health` endpoint.
+
+Add a local DNS record mapping `stocksentinel.home` to the Pi's LAN address. Trust the Caddy local certificate authority on client devices as appropriate. The `.home` hostname and service port are currently specific to the supplied deployment script, not configurable through `.env`.
+
+**Do not port-forward the admin interface.** Use a trusted LAN or a properly secured VPN. Back up the SQLite database and Web Push signing material before upgrades.
+
+## Configuring stock sources
+
+Sources should start **disabled**. Configure the detector, run **Check now**, inspect the diagnostic result and enable polling only when the observed behaviour is reliable.
+
+For HTML sources, use selectors tied to the *specific product*, not a generic page-wide basket button. A missing or ambiguous indicator or price should produce `Unknown`. Price extraction uses a named regex group `price`.
+
+The minimum supported polling interval is **5 minutes**; the default is 15 minutes. Increasing frequency can trigger retailer blocks. HTTP 403/429 responses should not be interpreted as stock status.
+
+### REST / JSON detector
+
+The REST / JSON adapter supports configured paths for product identity, availability, price and currency. Existing HTML sources are retained, and the SQLite schema is migrated for JSON configuration.
+
+For illustration, a Nintendo UK source may use this request URL:
+
+```text
+https://store.nintendo.com/api/catalog/products?q=Pokemon%20GO%20Plus%20%2B&limit=6
 ```
 
-The systemd unit binds `0.0.0.0:8080`, so firewall to trusted LAN or use VPN; HTTPS proxy is recommended. To access, use `http://PI-IP:8080`. If you leave SMTP disabled, checks still work but emails will fail; look for errors in Activity. For upgrades, back up `/opt/stocksentinel/data` and copy new publish files while preserving the DB and `/etc/stocksentinel.env`.
-
-## Configuration and safety notes
-
-- A source is **disabled by default**. Create item → create retailer source → configure selectors → run a manual check against page HTML (and ideally test fixture snapshots for both availability states) → enable automatic checks.
-- HTML source selectors must belong to the **specific product listing**. Ambiguous/missing indicators or missing price yield `Unknown`, not positive stock.
-- Regex `PricePattern` must capture a numeric GBP price in group `(?<price>...)`, e.g. `£\\s*(?<price>[0-9,]+(?:\\.[0-9]{2})?)` in JSON.
-- Minimum polling every **5 minutes**, default 15 minutes. More aggressive checks may violate site rules / result in blocks. 429/403 triggers increasing delay. Never bypass retailer rate limits.
-- Source changes reset check schedule but not the sent-alert latch; a previously alerted listing will not send duplicates unless verified unavailable before the next availability.
-- Database logs contain URLs and potentially retailer error text; store securely and avoid sensitive information in source URLs.
-- `STOCKSENTINEL_API_KEY` is required and must be 24+ characters; don't commit it. SMTP password supplied only via environment variable. HTTP-to-private-IP requests rejected (not a full defence against DNS rebinding in hostile environments, therefore **admin-only** configuration and trusted network still essential).
-- Scheduled processing is sequential by design (single worker); scale out only after introducing distributed coordination.
-- No automated tests were executed here because the build environment does not contain the .NET SDK. Run `dotnet build` and validate via local test server before Pi deployment.
-
-## Roadmap
-
-1. Verify a compliant reliable Nintendo UK source or suitable stock tracker API and add a dedicated source adapter.
-2. Add source diagnostics/fixture tests and alert delivery attempts UI.
-3. Optional HTTPS reverse proxy, CSRF protections, role-based UI, CSRF-safe key login, webhook notification providers and health checks.
-4. Optional health-email on prolonged parser failure and multiple retailer/site adapters.
-
-## REST / JSON detector (v2)
-
-Existing SQLite databases are migrated automatically with a nullable `json_config` column. Existing HTML sources remain unchanged. To configure Nintendo UK, edit its source in the UI, choose **REST / JSON (GET)**, and set the request URL to:
-
-`https://store.nintendo.com/api/catalog/products?q=Pokemon%20GO%20Plus%20%2B&limit=6`
-
-Use the following rules (the matching product ID is checked before trusting any stock status):
+Example detector configuration:
 
 ```json
 {
@@ -118,26 +161,53 @@ Use the following rules (the matching product ID is checked before trusting any 
 }
 ```
 
-Save the source **disabled**, use **Check now**, verify that it reports `Unavailable` with a diagnostic reason (not `Unknown`), and only then enable it. The first live restock must still be used to validate the API's positive signal; search results may be cached or delayed. If search results begin to contain multiple products and the desired SKU moves away from index zero, the detector will return `Unknown` rather than trusting another product. Paths support `.property` and `[0]` traversal, not arbitrary JSONPath filters.
+These paths are **examples, not a guaranteed working retailer integration**. Validate them against current responses. In particular, a result at index `[0]` may not be the intended product; `expectedId` helps prevent false matches. A positive API response must still be checked against the retailer's actual ordering flow.
 
-Retain the existing Pi SQLite database, configuration and environment file during deployment. Run `./deploy-pi.sh` from the project directory on your Mac after verifying `dotnet build`. The updated deployment script also fixes root-directory and appsettings read permissions encountered during initial deployment. SMTP credentials must be configured separately and **Send test email** must succeed before relying on alerts.
+The JSON detector also supports collection-style responses and can report individually checked items using configured labels (for example, pickup locations). Consult the source and tests for the exact supported collection configuration fields; do not assume full JSONPath filter syntax.
 
+## Web Push on iPhone
 
-## Web Push (v3)
+1. Deploy StockSentinel behind trusted HTTPS and open `https://stocksentinel.home` in Safari while connected to the home network.
+2. Ensure the device trusts the Caddy local CA certificate.
+3. Choose **Share → Add to Home Screen**.
+4. Launch StockSentinel **from its Home Screen icon**, log in and use **Notifications → Enable push on this device**.
+5. Allow notifications and use **Send test notification**. Confirm a notification actually arrives while the phone is locked.
 
-* Deploy using `./deploy-pi.sh` from the project root. The script preserves `data/` (SQLite, subscriptions and VAPID keys).
-* On iPhone, join the home Wi-Fi, browse to `https://stocksentinel.home` in Safari, and ensure the Caddy root certificate is trusted by iOS. Then Share → Add to Home Screen. Open StockSentinel **from its Home Screen icon**; login and select Notifications → Enable push on this device. Grant permission when prompted, and tap Send test notification.
-* For an iPhone running current iOS, Home Screen web apps support Web Push. Sending uses Apple's push infrastructure even outside the LAN. Notification taps open the retailer purchase URL, not the local admin dashboard.
-* The dashboard's push test reports acceptance by the browser push endpoint; verify a real notification arrives on the locked iPhone. If iOS rejects `.home`/local trust, this setup will require a properly trusted HTTPS hostname. No Cloudflare integration is bundled.
-* Notifications are sent only for a qualifying source transition to Available. The existing SQLite per-source alert latch prevents duplicates. If delivery fails, the latch is not marked and the next check retries.
-* Keep `data/push-vapid.json` private and backed up: if replaced, registered phones need to subscribe again. Service worker and manifest are publicly accessible; push registration, status and test endpoints require login.
-* SMTP is now optional, used only when `Smtp:Enabled=true`.
-* **Security:** Local HTTPS and a strong UI API key are required; never port-forward the admin dashboard. Do not use public access without stronger authentication and CSRF protections.
-* **Build validation required:** the JavaScript syntax was checked, but this environment lacks the .NET SDK. Run `dotnet restore && dotnet build` on your Mac before the Pi deployment.
+On supported iOS versions, Home Screen web apps can receive Web Push through Apple's push infrastructure even when the phone is away from home. Notification taps open the configured retailer purchase URL.
 
+A successful push endpoint response means the push service accepted the request; it does **not** guarantee the notification was displayed. Local CA trust and `.home` hostnames can cause compatibility issues on some devices.
 
-### Web Push VAPID contact
+Web Push subscriptions and signing keys are stored under `data/`. Keep `data/push-vapid.json` private and backed up: replacing signing keys can require devices to subscribe again. SMTP is optional and used only when enabled.
 
-On deployment, the installer prompts for a contact email **only if** `/etc/stocksentinel.env` does not already contain `Push__VapidSubject`. It writes `Push__VapidSubject=mailto:user@example.com`. This is a public contact identifier in signed VAPID messages, not an SMTP login; it is not hashed. The existing `data/push-vapid.json` signing keys and subscriptions are preserved. For unattended deployment, set `Push__VapidSubject` in `/etc/stocksentinel.env` before running the script.
+### VAPID contact
 
-If APNs still rejects the notification with `BadJwtToken`, investigate the VAPID JWT audience, expiry, key pair, and signing compatibility; the contact URI is only one possible cause.
+On first deployment, the installer asks for a contact email if `/etc/stocksentinel.env` has no `Push__VapidSubject`. It writes a value of the form:
+
+```text
+Push__VapidSubject=mailto:user@example.com
+```
+
+This contact is public VAPID metadata, **not** an SMTP password. To deploy unattended, configure `Push__VapidSubject` in the private Pi environment file ahead of time. If Apple rejects a push with `BadJwtToken`, investigate the JWT audience, expiry, signing keys and compatibility rather than assuming the contact field is the only cause.
+
+## Security and operational notes
+
+- Keep the dashboard on a trusted network behind HTTPS; do not expose the administration API publicly without further authentication and CSRF review.
+- The API key must be strong and private. Never put it in source control, screenshots, logs or issue reports.
+- The application restricts nonpublic HTTP targets, but this is not a complete defence against DNS rebinding or malicious administrator-supplied URLs.
+- Database activity can include URLs and retailer error details. Avoid putting credentials or personal data in source URLs.
+- Preserve `data/` during deployment and back up the database, subscriptions and VAPID keys.
+- Monitoring is sequential by design; running multiple workers against one database requires additional coordination.
+- Retailer signals may be stale, region-specific, JavaScript-dependent or blocked by bot protections. StockSentinel does not guarantee successful checkout.
+
+## Roadmap
+
+Potential future improvements, subject to validation and need:
+
+- More robust retailer-specific diagnostics and fixture coverage for changing APIs and page layouts.
+- Clearer visibility into notification delivery attempts and failures.
+- Additional authenticated access controls and CSRF hardening before any broader exposure.
+- More portable deployment configuration for alternative hostnames, architectures and reverse proxies.
+
+## Licence
+
+No licence is specified in this repository documentation. Add a `LICENSE` file before inviting external reuse or contributions.
