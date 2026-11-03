@@ -81,6 +81,7 @@ Repository administrators must protect `main` and `develop`: require pull reques
 | --- | --- |
 | `appsettings.json` | Local bootstrap settings, including database path and optional SMTP settings; **not committed** |
 | `STOCKSENTINEL_API_KEY` | Required UI/API authentication key; use a strong randomly generated value |
+| `Application__BaseUrl` | Public HTTPS application origin for test-notification links; native default `https://stocksentinel.home/` |
 | `STOCKSENTINEL_SMTP_PASSWORD` | SMTP password, provided via environment rather than source-controlled JSON |
 | `.env` | Private Compose runtime settings, or optional native deployment settings such as `PI_SSH`; **not committed** |
 | `.env.example` | Safe native deployment example containing `PI_SSH` |
@@ -141,26 +142,23 @@ Use Linux **amd64 or arm64** containers with Docker Engine and Compose v2+, or D
 From a clone of the repository, create a private `.env` file (this refuses to overwrite an existing file):
 
 ```bash
-(umask 077; set -C; printf 'STOCKSENTINEL_API_KEY=%s\nPush__VapidSubject=mailto:you@example.com\n' "$(openssl rand -hex 32)" > .env)
+(umask 077; set -C; printf 'STOCKSENTINEL_API_KEY=%s\nApplication__BaseUrl=https://stock.example.com\n' "$(openssl rand -hex 32)" > .env)
 ```
 
-Edit `.env` to set your real public VAPID contact URI. If `.env` already exists, add these settings with an editor instead, using a fresh key of at least 24 characters. Keep it private (`chmod 600 .env`); displaying/copying the key exposes a secret. It is ignored by Git and excluded from the image build. Compose passes it to the running container; Docker administrators and `docker compose config` can inspect runtime secrets.
+Edit `Application__BaseUrl` in `.env` to your own HTTPS hostname (an origin only, with no path, credentials, query or fragment). If `.env` already exists, add these settings with an editor instead, using a fresh key of at least 24 characters. Keep it private (`chmod 600 .env`); displaying/copying the key exposes a secret. It is ignored by Git and excluded from the image build. Compose passes it to the running container; Docker administrators and `docker compose config` can inspect runtime secrets.
 
-Optional `.env` settings use the existing environment conventions, for example:
+Required for browser access: the API key, application URL and your own trusted HTTPS proxy/hostname. Configure the proxy's actual peer IP as described below. Web Push and SMTP are optional; for Web Push, add a real public contact URI. The application generates its VAPID signing keys automatically on first startup and retains them in the data volume; do not generate or replace them manually. Additional `.env` settings use the existing environment conventions:
 
 ```text
 STOCKSENTINEL_PORT=8080
 STOCKSENTINEL_PROXY_IP=172.18.0.1
+Push__VapidSubject=mailto:you@example.com
 Smtp__Enabled=false
 ```
 
 `STOCKSENTINEL_PORT` changes the host and container listening port. `STOCKSENTINEL_PROXY_IP` is the **actual immediate proxy peer IP seen by the container**, not a hostname or your phone's address; the address above is illustrative. The default trusts only `127.0.0.1`. The single HTTP port binds to host loopback, for a reverse proxy on that host; it is not a public HTTP admin endpoint.
 
-Configure your own trusted HTTPS reverse proxy and hostname, forwarding to `http://127.0.0.1:8080` (or your chosen port). Have it preserve the request host and overwrite `X-Forwarded-Proto` with the actual scheme; set `STOCKSENTINEL_PROXY_IP` to its observed peer address. On Linux with a host proxy, this is commonly the Compose bridge gateway, available after startup with:
-
-```bash
-docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "$(docker compose ps -q stocksentinel)"
-```
+Configure your own trusted HTTPS reverse proxy and hostname, forwarding to `http://127.0.0.1:8080` (or your chosen port). Have it preserve the request host and overwrite `X-Forwarded-Proto` with the actual scheme; set `STOCKSENTINEL_PROXY_IP` to its observed peer address.
 
 Docker Desktop/proxy networking may use another peer IP; confirm it with your network configuration. Recheck it if the Docker network is recreated. A proxy in another container requires your own shared-network/Compose override and a stable, explicitly trusted proxy IP. Do not trust arbitrary forwarded headers or expose the backend to bypass the proxy. No Caddy, certificate or DNS configuration is supplied for containers.
 
@@ -170,9 +168,17 @@ docker compose ps
 docker compose logs --tail=100 stocksentinel
 ```
 
+After startup, a Linux host proxy commonly reaches the container through the Compose bridge gateway. Inspect it with:
+
+```bash
+docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "$(docker compose ps -q stocksentinel)"
+```
+
+If this is your proxy's peer address, set `STOCKSENTINEL_PROXY_IP` accordingly and apply it with `docker compose up -d --force-recreate`. A gateway address is not a substitute for checking your particular proxy/network setup. Docker Desktop may use another peer IP.
+
 Open **your HTTPS hostname**, enter the key from your private `.env` in **API key**, and choose **Sign in**. The loopback HTTP port is for the proxy; Production keeps authentication cookies Secure. Do not switch to Development to allow HTTP login. HTTPS trusted by the iPhone and a Home Screen installation are required for [Web Push](#web-push-on-iphone); replace the native `stocksentinel.home` examples with your own hostname, and use your proxy's CA instructions if it uses a private CA.
 
-The built-in health check calls `/health` from inside the container. Outbound DNS/HTTPS to public retailers and push providers, and SMTP when enabled, must be allowed by the host/firewall. Existing direct-connection and public-destination restrictions still apply; outbound HTTP proxies are not used. Set SMTP fields such as `Smtp__Host`, `Smtp__Username` and `STOCKSENTINEL_SMTP_PASSWORD` in `.env` if needed. Web Push test notifications still link to the native `stocksentinel.home` hostname; use receipt of the notification to test delivery. Stock alerts use their configured retailer URL.
+The built-in health check calls `/health` from inside the container. Outbound DNS/HTTPS to public retailers and push providers, and SMTP when enabled, must be allowed by the host/firewall. Existing direct-connection and public-destination restrictions still apply; outbound HTTP proxies are not used. Set SMTP fields such as `Smtp__Host`, `Smtp__Username` and `STOCKSENTINEL_SMTP_PASSWORD` in `.env` if needed. Test notifications open `Application__BaseUrl`; stock alerts and reminders still open the configured retailer purchase URL (or source request URL if none is set). Native Pi installations without `Application:BaseUrl` keep `https://stocksentinel.home/` as their test-notification destination.
 
 ### Data, upgrades and backups
 
