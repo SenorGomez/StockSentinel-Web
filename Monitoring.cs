@@ -58,7 +58,7 @@ public sealed class MonitorEngine(Store store,IHttpClientFactory factory,MailNot
             if(result.Status=="Available" && (result.Price is null || result.Price<=item.MaxPriceGbp) && !store.HasNotified(s.Id))
             {
                 bool delivered=false;
-                var purchaseUrl=JsonStockDetector.PurchaseUrl(s) ?? s.Url;
+                var purchaseUrl=NotificationUrls.ForSource(s);
                 try
                 {
                     var count=await push.SendAsync($"🚨 {item.Name} IN STOCK!",$"{s.Name} — {priceLabel} — {result.Detail}",purchaseUrl,ct);
@@ -172,7 +172,7 @@ public sealed class ReminderWorker(Store store,PushNotifications push,ILogger<Re
                     if(item is null)continue;
                     try
                     {
-                        var accepted=await push.SendAsync($"🔔 Still in stock: {item.Name}",$"Reminder {count}/2 — {source.Name}",JsonStockDetector.PurchaseUrl(source)??source.Url,stoppingToken);
+                        var accepted=await push.SendAsync($"🔔 Still in stock: {item.Name}",$"Reminder {count}/2 — {source.Name}",NotificationUrls.ForSource(source),stoppingToken);
                         store.Log("alert",$"Reminder push accepted for {accepted} device(s): {item.Name} at {source.Name}",id);
                     }
                     catch(Exception ex) when(ex is not OperationCanceledException){store.Log("warning",$"Reminder push failed: {ex.Message}",id);logger.LogWarning(ex,"Reminder push failed");}
