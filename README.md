@@ -349,6 +349,8 @@ Example version 1 template (a public example endpoint, not a working retailer in
 
 Share the downloaded file directly with someone you trust; templates are not uploaded to a marketplace or fetched from remote URLs. The selected file is sent to your own StockSentinel installation for validation. Review the JSON before sharing or importing: source names, URLs and rules can contain private information, and automated checks cannot recognise every secret. Export/import refuse URL credentials/fragments, recognisable credential strings, unknown JSON rule fields and query parameters outside a conservative public allowlist (for example `q`, `limit`, `id`, `sku`, `parts` and `locale`). If blocked, remove private values from a separate copy of the source; do not share authenticated or signed URLs. Import validation does not contact the retailer. A template does not prove that its detector is correct or its URLs are trustworthy.
 
+Apple Store pickup URLs on `https://www.apple.com/[country]/shop/retail/pickup-message` (or the same path without a country) additionally support `pl=true`/`false` and `parts.` followed only by ASCII digits, such as `parts.0` and `parts.1`. The existing `location` parameter is preserved: a postcode can reveal your location, so review or remove it from a separate copy before sharing. These exceptions do not permit tokens, signatures or unknown query parameters.
+
 ## Web Push on iPhone
 
 Use **iOS 16.4 or later**. Web Push requires the installed Home Screen web app, not an ordinary Safari tab; see [WebKit's requirements](https://webkit.org/blog/13878/).
