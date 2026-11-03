@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+LEGAL_FILES = ("LICENSE", "THIRD-PARTY-NOTICES.txt")
 
 
 def verify(stage, marker):
@@ -15,6 +16,21 @@ def verify(stage, marker):
     files = {str(p.relative_to(output)) for p in output.rglob("*") if p.is_file()}
     expected = {"StockSentinel.Web", "StockSentinel.Web.pdb", "StockSentinel.Web.staticwebassets.endpoints.json",
                 "libe_sqlite3.so", "appsettings.json", "appsettings.example.json"}
+    for name in LEGAL_FILES:
+        expected.add(name)
+        assert (output / name).read_bytes() == (stage / name).read_bytes(), name
+    packs = json.loads(subprocess.check_output([
+        "dotnet", "msbuild", "StockSentinel.Web.csproj", "-nologo", "-target:ResolveFrameworkReferences",
+        "-p:RuntimeIdentifier=linux-arm", "-p:SelfContained=true", "-getItem:ResolvedRuntimePack"
+    ], cwd=stage))["Items"]["ResolvedRuntimePack"]
+    assert {pack["FrameworkName"] for pack in packs} == {"Microsoft.NETCore.App", "Microsoft.AspNetCore.App"}
+    for pack in packs:
+        directory = Path(pack["PackageDirectory"])
+        for name in ("LICENSE.txt", "THIRD-PARTY-NOTICES.txt"):
+            source, = (p for p in directory.iterdir() if p.name.lower() == name.lower())
+            relative = "legal/" + pack["FrameworkName"] + "/" + name
+            expected.add(relative)
+            assert (output / relative).read_bytes() == source.read_bytes(), relative
     for source in (stage / "wwwroot").rglob("*"):
         if source.is_file():
             name = str(source.relative_to(stage))
@@ -45,6 +61,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="stocksentinel-publish-check-") as directory:
         stage = Path(directory)
         tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).split(b"\0")
+        # Explicit legal inputs also work before newly added files have been staged.
+        tracked += [name.encode() for name in LEGAL_FILES if name.encode() not in tracked]
         for name in tracked:
             if not name:
                 continue

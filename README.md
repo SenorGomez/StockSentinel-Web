@@ -267,4 +267,10 @@ Potential future improvements, subject to validation and need:
 
 ## Licence
 
-No licence is specified in this repository documentation. Add a `LICENSE` file before inviting external reuse or contributions.
+StockSentinel's original code and assets are licensed under the [MIT licence](LICENSE).
+Dependencies retain their own licences; see [third-party notices](THIRD-PARTY-NOTICES.txt),
+including WebPush source availability. Self-contained publishes include these notices
+and the bundled .NET runtime's legal files under `legal/`; preserve them when redistributing.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks and pull requests targeting
+`develop`, and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
