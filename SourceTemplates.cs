@@ -26,6 +26,9 @@ public static class SourceTemplates
     { "q", "query", "search", "limit", "offset", "page", "pagesize", "id", "sku", "product", "productid",
       "parts", "part", "partnumber", "store", "storeid", "location", "locale", "country", "language", "currency", "format" };
     static readonly Regex Secret = new(@"(?i)(?:bearer\s+\S+|-----BEGIN [^-]*PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|password|secret|authorization|session[_-]?id)\s*[:=]\s*\S+)", RegexOptions.None, TimeSpan.FromMilliseconds(200));
+    static readonly Regex ApplePickupPath = new(@"\A/(?:[a-z]{2}/)?shop/retail/pickup-message\z", RegexOptions.None, TimeSpan.FromMilliseconds(200));
+    static readonly Regex ApplePickupPart = new(@"\Aparts\.[0-9]+\z", RegexOptions.None, TimeSpan.FromMilliseconds(200));
+    static readonly Regex ApplePickupSecret = new(@"(?i)\b(?:token|signature|sig|auth|credential)\s*[:=]\s*\S+", RegexOptions.None, TimeSpan.FromMilliseconds(200));
 
     public static string? ValidateSettings(NewSource x, IConfiguration config)
     {
@@ -100,10 +103,24 @@ public static class SourceTemplates
     {
         if(!Uri.TryCreate(value,UriKind.Absolute,out var uri)||uri.Scheme!="https"||uri.UserInfo.Length>0||uri.Fragment.Length>0)
             throw new ArgumentException("Template URLs must be HTTPS without credentials or fragments");
+        var applePickup=uri.IdnHost.Equals("www.apple.com",StringComparison.OrdinalIgnoreCase)
+            &&uri.Port==443&&ApplePickupPath.IsMatch(uri.AbsolutePath);
         foreach(var part in uri.Query.TrimStart('?').Split('&',StringSplitOptions.RemoveEmptyEntries))
         {
-            var key=Uri.UnescapeDataString(part.Split('=',2)[0]);
-            if(!PublicQueryKeys.Contains(key))throw new ArgumentException("URL query parameter is not approved for sharing. Remove private parameters from a copy of the source before exporting.");
+            var pair=part.Split('=',2);
+            var key=Uri.UnescapeDataString(pair[0]);
+            // Decode form-style spaces as well as percent escapes before checking
+            // Apple query values. Public product/location fields must not hide credentials.
+            var queryValue=Uri.UnescapeDataString((pair.Length==2?pair[1]:"").Replace('+',' '));
+            if(applePickup&&(Secret.IsMatch(queryValue)||ApplePickupSecret.IsMatch(queryValue)))
+                throw new ArgumentException("Template contains a potentially sensitive query value; remove it before sharing");
+            if(applePickup&&key=="pl")
+            {
+                if(queryValue is not ("true" or "false"))throw new ArgumentException("Apple pickup pl must be true or false");
+                continue;
+            }
+            if(!PublicQueryKeys.Contains(key)&&!(applePickup&&ApplePickupPart.IsMatch(key)))
+                throw new ArgumentException("URL query parameter is not approved for sharing. Remove private parameters from a copy of the source before exporting.");
         }
     }
     static void RejectDuplicateProperties(JsonElement e)

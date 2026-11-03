@@ -17,6 +17,79 @@ public sealed class SourceTemplateTests
     static SourceTemplate Read(string json, IConfiguration? config = null) => SourceTemplates.Read(JsonSerializer.Deserialize<JsonElement>(json),config ?? Config);
     static string File(Source source) => Encoding.UTF8.GetString(SourceTemplates.Bytes(SourceTemplates.Export(source,Config)));
 
+    [Fact]
+    public void Apple_pickup_example_can_be_exported_and_imported()
+    {
+        const string url="https://www.apple.com/uk/shop/retail/pickup-message?pl=true&parts.0=MK2E4QN%2FA&location=RM1%204HB";
+        var template=SourceTemplates.Export(Example("rest-json",url),Config);
+        var imported=SourceTemplates.ToSource(SourceTemplates.Read(Document(template),Config),99);
+        Assert.Equal(url,imported.Url);
+        Assert.False(imported.Enabled);
+    }
+
+    [Theory]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=false&parts.0=MK2E4QN%2FA&parts.1=MTJV3B%2FA&location=RM1+4HB")]
+    [InlineData("https://www.apple.com/shop/retail/pickup-message?pl=true&parts.12=MK2E4QN%2FA&location=90210")]
+    [InlineData("https://www.apple.com/fr/shop/retail/pickup-message?parts.01=MK2E4QN%2FA")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=true")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.0=MK2E4QN%2FA")]
+    [InlineData("https://example.com/pickup?location=RM1%204HB&parts=MK2E4QN%2FA")]
+    public void Apple_pickup_parameters_round_trip_without_changing_other_retailers(string url)
+    {
+        var exported=SourceTemplates.Export(Example("rest-json",url),Config);
+        Assert.Equal(url,exported.Source.Url);
+        // Check import independently rather than relying on export sanitising the URL.
+        var template=SourceTemplates.Export(Example("rest-json"),Config);
+        var imported=SourceTemplates.Read(Document(template with {Source=template.Source with {Url=url}}),Config);
+        Assert.Equal(url,imported.Source.Url);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/uk/shop/retail/pickup-message?pl=true")]
+    [InlineData("https://example.com/uk/shop/retail/pickup-message?parts.0=MK2E4QN%2FA")]
+    [InlineData("https://www.apple.com.evil.example/uk/shop/retail/pickup-message?pl=true")]
+    [InlineData("https://www.apple.com@evil.example/uk/shop/retail/pickup-message?parts.0=MK2E4QN%2FA")]
+    [InlineData("http://www.apple.com/uk/shop/retail/pickup-message?pl=true")]
+    [InlineData("https://www.apple.com:8443/uk/shop/retail/pickup-message?parts.0=MK2E4QN%2FA")]
+    [InlineData("https://www.apple.com/uk/shop/product?pl=true")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message/extra?parts.0=MK2E4QN%2FA")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.=sku")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.-1=sku")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.1e2=sku")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.1.token=private")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.0%0A=sku")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.١=sku")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=1")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=true&token=private")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.0=sku&%73ignature=private")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=true&unknown=private")]
+    [InlineData("https://user:password@www.apple.com/uk/shop/retail/pickup-message?pl=true")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?pl=true#token=private")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.0=Bearer+private")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.0=api_key%3Dprivate")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?parts.0=signature%3Dprivate")]
+    [InlineData("https://www.apple.com/uk/shop/retail/pickup-message?location=password%3Dprivate")]
+    public void Apple_exceptions_do_not_allow_unsafe_urls_or_parameters(string url)
+    {
+        Assert.Throws<ArgumentException>(()=>SourceTemplates.Export(Example("rest-json",url),Config));
+        var template=SourceTemplates.Export(Example("rest-json"),Config);
+        Assert.Throws<ArgumentException>(()=>SourceTemplates.Read(Document(template with {Source=template.Source with {Url=url}}),Config));
+    }
+
+    [Fact]
+    public void Apple_pickup_validation_also_applies_to_json_purchase_urls()
+    {
+        const string url="https://www.apple.com/uk/shop/retail/pickup-message?pl=true&parts.0=MK2E4QN%2FA&location=RM1%204HB";
+        var rules=Rules.Replace("https://example.com/buy?id=SKU%2FA",url);
+        var template=SourceTemplates.Export(Example("rest-json",rules:rules),Config);
+        Assert.Equal(url,JsonStockDetector.Validate(SourceTemplates.Read(Document(template),Config).Source.JsonConfig!.Value.GetRawText()).PurchaseUrl);
+        var unsafeRules=rules.Replace("pl=true","pl=true&token=private");
+        Assert.Throws<ArgumentException>(()=>SourceTemplates.Export(Example("rest-json",rules:unsafeRules),Config));
+        var changed=template with {Source=template.Source with {JsonConfig=JsonSerializer.Deserialize<JsonElement>(unsafeRules)}};
+        Assert.Throws<ArgumentException>(()=>SourceTemplates.Read(Document(changed),Config));
+    }
+
     [Theory]
     [InlineData("html")]
     [InlineData("rest-json")]
