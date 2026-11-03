@@ -6,6 +6,14 @@ StockSentinel monitors configured product listings and JSON endpoints, records a
 
 > **Important:** Stock signals must be validated against the retailer's actual purchase flow. An HTTP 200 response, an API `orderable` flag, or generic “Add to basket” text does not guarantee that checkout is possible. Respect retailer terms, rate limits and bot protections; do not bypass CAPTCHAs or access controls.
 
+## Project Origins
+
+StockSentinel began as a personal project after repeatedly missing Nintendo UK's notoriously brief Pokémon GO Plus + restocks. Apparently, checking the shop "just one more time" was not a reliable monitoring strategy.
+
+What started as a simple stock checker gradually evolved into a self-hosted monitoring application with notifications, historical metrics and support for multiple retailers.
+
+Eventually, StockSentinel caught a restock, the Pokémon GO Plus + was successfully ordered, and it arrived just 24 hours later. Mission accomplished—with a slightly more capable stock checker than originally planned. 🎉
+
 ## Features
 
 - **Products and sources:** Configure products, maximum GBP prices, enabled status, HTTPS sources and polling intervals from the dashboard.
