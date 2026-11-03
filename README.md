@@ -56,7 +56,18 @@ dotnet build --configuration Release
 dotnet test tests/StockSentinel.Tests/StockSentinel.Tests.csproj --configuration Release
 ```
 
-GitHub Actions runs restore, build and tests on pushes and pull requests. CI does not need your Pi SSH configuration, SMTP credentials or runtime database.
+GitHub Actions runs restore, build, .NET tests, script validation, isolated deployment/rollback tests and two `linux-arm` publishes on pushes and pull requests. Publish checks use synthetic secrets and reject runtime data, recursion and unexpected files. CI uses read-only repository permissions and needs no Pi SSH configuration, SMTP credentials or runtime database.
+
+Additional local checks (Python 3 and Node.js are needed for these checks, not by the deployed app):
+
+```bash
+python3 tests/deployment-tests.py
+python3 tests/verify-publish.py
+gitleaks git --redact --log-opts=--all .
+dotnet list StockSentinel.Web.csproj package --vulnerable --include-transitive --no-restore
+```
+
+Repository administrators must protect `main` and `develop`: require pull requests, successful **build-and-test** and **Secret scan** checks, and at least one approval; block force pushes/deletions and apply the rules to administrators. Ensure dependency alerts are enabled. Workflow files alone cannot enforce these GitHub settings.
 
 ## Configuration and credentials
 
@@ -103,28 +114,40 @@ The included `deploy-pi.sh` publishes a **self-contained `linux-arm` .NET 10 exe
    cp .env.example .env
    ```
 
-   Set `PI_SSH` in `.env` to your own SSH destination, for example `user@raspberrypi.local`. Alternatively export `PI_SSH` in your shell.
+   Set `PI_SSH` in `.env` to your own SSH destination, for example `user@raspberrypi.local`, then explicitly load your own trusted file:
+
+   ```bash
+   set -a
+   . ./.env
+   set +a
+   ```
+
+   The script reads the exported environment; it does not automatically load `.env`. Alternatively run `PI_SSH=user@raspberrypi.local ./deploy-pi.sh`.
 3. From the repository root, run:
 
    ```bash
    ./deploy-pi.sh
    ```
 
-The script runs the xUnit tests **before** connecting to the Pi. It then publishes with the equivalent of:
+The script runs the xUnit tests **before** connecting to the Pi. It creates a fresh temporary directory and publishes with the equivalent of:
 
 ```bash
 dotnet publish -c Release -r linux-arm --self-contained true \
-  -p:PublishSingleFile=true -o ./publish
+  -p:PublishSingleFile=true -o "$TMPDIR_LOCAL/publish"
 ```
 
 On the Pi, the installer:
 
-- Installs into `/opt/stocksentinel` and runs as the `stocksentinel` system user.
+- Stages application files under `/opt/stocksentinel/releases/` and atomically switches `/opt/stocksentinel/current`; runs as the `stocksentinel` system user. The working directory remains `/opt/stocksentinel`, preserving relative database paths. The release links to the existing root `appsettings.json`.
 - Creates `/etc/stocksentinel.env` on first installation and generates a random API key with `openssl rand -hex 32`. **Save the key shown during first deployment securely.**
 - Prompts for a VAPID contact email if `Push__VapidSubject` is not already configured.
 - Preserves `/opt/stocksentinel/data/`, the existing `appsettings.json`, and `/etc/stocksentinel.env` on subsequent deployments.
 - Runs the service on **`127.0.0.1:5070`** and configures Caddy to proxy **`https://stocksentinel.home`** using `tls internal`.
-- Validates the Caddy configuration, restarts the service and checks the local `/health` endpoint.
+- Validates Caddy before activation, restarts the service and requires `/health` to succeed within a bounded readiness check. Restart, readiness or Caddy reload failures restore the previous release pointer, systemd unit and Caddy configuration. A legacy root installation is preserved for rollback during its first staged upgrade.
+
+SQLite remains a native sidecar (`libe_sqlite3.so`) next to the self-contained executable; the publish regression check verifies that incremental publishes retain it.
+
+The installer is `deploy/install-pi.sh`, with `deploy/stocksentinel.service` as the canonical loopback-only unit. Old releases remain available for inspection/rollback and require occasional manual cleanup; do not remove the active target of `current`. Rollback restores application/configuration files, not SQLite contents: monitoring history, subscriptions, VAPID keys and the environment file remain in place. Keep backups, and inspect service health if the installer reports incomplete rollback. Power loss or a failed disk can require manual recovery. No remote changes occur until you explicitly run the deployment script.
 
 Add a local DNS record mapping `stocksentinel.home` to the Pi's LAN address. Trust the Caddy local certificate authority on client devices as appropriate. The `.home` hostname and service port are currently specific to the supplied deployment script, not configurable through `.env`.
 
@@ -136,7 +159,7 @@ Sources should start **disabled**. Configure the detector, run **Check now**, in
 
 For HTML sources, use selectors tied to the *specific product*, not a generic page-wide basket button. A missing or ambiguous indicator or price should produce `Unknown`. Price extraction uses a named regex group `price`.
 
-The minimum supported polling interval is **5 minutes**; the default is 15 minutes. Increasing frequency can trigger retailer blocks. HTTP 403/429 responses should not be interpreted as stock status.
+The minimum supported polling interval is **3 minutes** (or a higher configured `Sentinel:MinimumPollMinutes`); the source editor defaults to 15 minutes. Increasing frequency can trigger retailer blocks. HTTP 403/429 responses should not be interpreted as stock status.
 
 ### REST / JSON detector
 
@@ -209,6 +232,8 @@ On supported iOS versions, Home Screen web apps can receive Web Push through App
 
 A successful push endpoint response means the push service accepted the request; it does **not** guarantee the notification was displayed. Local CA trust and `.home` hostnames can cause compatibility issues on some devices.
 
+Web Push accepts HTTPS endpoints on port 443 from Apple (`*.push.apple.com`), Google (`fcm.googleapis.com`, legacy `android.googleapis.com`), Mozilla (`updates.push.services.mozilla.com`, legacy `push.services.mozilla.com`) and Windows (`*.notify.windows.com`). Provider paths and query strings remain opaque. Unsupported stored subscriptions are retained but skipped during delivery; re-subscribe from a supported browser if necessary. Adding another provider requires a reviewed allowlist change.
+
 Web Push subscriptions and signing keys are stored under `data/`. Keep `data/push-vapid.json` private and backed up: replacing signing keys can require devices to subscribe again. SMTP is optional and used only when enabled.
 
 ### VAPID contact
@@ -225,7 +250,7 @@ This contact is public VAPID metadata, **not** an SMTP password. To deploy unatt
 
 - Keep the dashboard on a trusted network behind HTTPS; do not expose the administration API publicly without further authentication and CSRF review.
 - The API key must be strong and private. Never put it in source control, screenshots, logs or issue reports.
-- The application restricts nonpublic HTTP targets, but this is not a complete defence against DNS rebinding or malicious administrator-supplied URLs.
+- Monitoring and Web Push connect directly to validated public IP addresses, with normal hostname/TLS validation. Every new connection checks DNS results and pins the selected address; redirects and outbound HTTP proxies are disabled. Private, loopback, link-local and special-purpose destinations are rejected. Templates and retailer URLs still need manual review.
 - Database activity can include URLs and retailer error details. Avoid putting credentials or personal data in source URLs.
 - Preserve `data/` during deployment and back up the database, subscriptions and VAPID keys.
 - Monitoring is sequential by design; running multiple workers against one database requires additional coordination.

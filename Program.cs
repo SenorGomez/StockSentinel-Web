@@ -5,7 +5,7 @@ var builder=WebApplication.CreateBuilder(args);
 builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(options=>AuthenticationSecurity.ConfigureProxy(options,builder.Configuration));
 builder.Services.Configure<SentinelOptions>(builder.Configuration.GetSection("Sentinel"));
 builder.Services.AddSingleton<PushNotifications>();builder.Services.AddSingleton<Store>();builder.Services.AddSingleton<MailNotifier>();builder.Services.AddSingleton<MonitorEngine>();builder.Services.AddHostedService<PollWorker>();builder.Services.AddHostedService<ReminderWorker>();
-builder.Services.AddHttpClient("stock",client=>{client.Timeout=TimeSpan.FromSeconds(builder.Configuration.GetValue("Sentinel:HttpTimeoutSeconds",20));client.DefaultRequestHeaders.UserAgent.ParseAdd(builder.Configuration["Sentinel:DefaultUserAgent"]??"StockSentinel/1.0");}).ConfigurePrimaryHttpMessageHandler(()=>new HttpClientHandler{AllowAutoRedirect=false,UseCookies=false});
+builder.Services.AddHttpClient("stock",client=>{client.Timeout=TimeSpan.FromSeconds(builder.Configuration.GetValue("Sentinel:HttpTimeoutSeconds",20));client.DefaultRequestHeaders.UserAgent.ParseAdd(builder.Configuration["Sentinel:DefaultUserAgent"]??"StockSentinel/1.0");}).ConfigurePrimaryHttpMessageHandler(()=>NetworkSafety.CreateHandler());
 var app=builder.Build();
 app.UseForwardedHeaders();
 app.Services.GetRequiredService<Store>().Init();

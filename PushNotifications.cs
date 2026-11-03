@@ -39,7 +39,8 @@ public sealed class PushNotifications(IConfiguration config, ILogger<PushNotific
     }
     public void Subscribe(PushRegistration registration)
     {
-        if (!Uri.TryCreate(registration.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != "https" || registration.Endpoint.Length > 2048 || string.IsNullOrWhiteSpace(registration.Keys?.P256dh) || string.IsNullOrWhiteSpace(registration.Keys.Auth)) throw new ArgumentException("Invalid push subscription");
+        PushEndpointPolicy.Validate(registration.Endpoint);
+        if(string.IsNullOrWhiteSpace(registration.Keys?.P256dh)||string.IsNullOrWhiteSpace(registration.Keys.Auth))throw new ArgumentException("Invalid push subscription");
         using var connection = new SqliteConnection(ConnectionString); connection.Open();
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "INSERT INTO push_subscriptions(endpoint,p256dh,auth,created_utc) VALUES($e,$p,$a,$d) ON CONFLICT(endpoint) DO UPDATE SET p256dh=$p,auth=$a";
@@ -71,12 +72,14 @@ public sealed class PushNotifications(IConfiguration config, ILogger<PushNotific
         var payload=JsonSerializer.Serialize(new {title,body,url});
         var vapid=new VapidDetails(subject,keys.PublicKey,keys.PrivateKey);
         var successes=0;
-        using var client=new WebPushClient();
+        using var http=new HttpClient(NetworkSafety.CreateHandler());
+        using var client=new WebPushClient(http);
         foreach(var sub in subscriptions)
         {
             try
             {
                 ct.ThrowIfCancellationRequested();
+                PushEndpointPolicy.Validate(sub.Endpoint);
                 await client.SendNotificationAsync(new PushSubscription(sub.Endpoint,sub.Keys.P256dh,sub.Keys.Auth),payload,vapid,cancellationToken:ct);
                 successes++;
             }
