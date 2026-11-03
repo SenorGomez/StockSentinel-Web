@@ -20,6 +20,21 @@
     <None Remove="data/**" />
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="LICENSE;THIRD-PARTY-NOTICES.txt" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+  <!-- Keep notices from the actual runtime packs alongside self-contained binaries. -->
+  <Target Name="IncludeRuntimeLegalNotices" AfterTargets="ComputeFilesToPublish" Condition="'$(SelfContained)' == 'true'">
+    <ItemGroup>
+      <_RuntimeLicense Include="%(ResolvedRuntimePack.PackageDirectory)/LICENSE.*">
+        <RelativePath>legal/%(ResolvedRuntimePack.FrameworkName)/LICENSE.txt</RelativePath>
+      </_RuntimeLicense>
+      <_RuntimeNotice Include="%(ResolvedRuntimePack.PackageDirectory)/THIRD-PARTY-NOTICES.*">
+        <RelativePath>legal/%(ResolvedRuntimePack.FrameworkName)/THIRD-PARTY-NOTICES.txt</RelativePath>
+      </_RuntimeNotice>
+      <ResolvedFileToPublish Include="@(_RuntimeLicense);@(_RuntimeNotice)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    </ItemGroup>
+  </Target>
   <!-- Preserve native sidecars when the SDK skips incremental bundle generation.
        Otherwise its inferred outputs can omit SQLite and publish cleanup deletes it. -->
   <Target Name="KeepNativeFilesExternal" BeforeTargets="_ComputeFilesToBundle"
