@@ -14,15 +14,15 @@ StockSentinel monitors configured product listings and JSON endpoints, records a
 - **REST / JSON detection:** Configurable paths for identity, availability, price, currency and purchase URL; supports collection matching for JSON responses containing multiple items.
 - **Monitoring:** Background checks, manual **Check now**, recent activity, status and next-check information, with SQLite persistence.
 - **Conservative results:** Ambiguous or incomplete responses are reported as `Unknown`, not assumed to be in stock. HTTP 403/429 and other failures are handled as errors with backoff.
-- **Notifications:** SMTP email (MailKit) and browser Web Push, with transition-based deduplication and retries when delivery fails.
+- **Notifications:** SMTP email (MailKit) and browser Web Push, with per-source deduplication and conditional reminder pushes. See [notification behaviour](#notification-behaviour) for retry limits.
 - **Authenticated UI:** API-key login and an HttpOnly session cookie. SMTP passwords are not exposed in the dashboard.
 - **Tests and CI:** xUnit tests for JSON detection and a GitHub Actions build/test workflow.
 
 ## Requirements
 
-- .NET 10 SDK for local development and publishing.
+- .NET 10 SDK for local development and publishing; OpenSSL for local key generation.
 - A writable directory for SQLite data.
-- For the supplied Pi deployment script: a **32-bit ARM Raspberry Pi OS** host, SSH access with `sudo`, `openssl`, `systemd` and Caddy configured on the Pi.
+- For the supplied Pi deployment script: a **32-bit ARM Raspberry Pi OS** host, SSH access with `sudo`, `openssl`, `curl`, `ss` (from `iproute2`), `systemd` and Caddy configured on the Pi, including `/etc/caddy/Caddyfile` and a running `caddy` service. The publishing computer needs Bash, SSH/SCP and .NET 10.
 - A modern browser; HTTPS is required for Web Push on supported devices.
 
 ## Local development
@@ -33,7 +33,7 @@ Clone the repository and work from its root:
 # Create your local configuration from the supplied sample.
 cp appsettings.example.json appsettings.json
 
-# Generate a local login key. Keep it private.
+# Generate a local login key. The next command displays a secret: use a private terminal.
 export STOCKSENTINEL_API_KEY="$(openssl rand -hex 32)"
 printf 'Local login key: %s\n' "$STOCKSENTINEL_API_KEY"
 
@@ -41,13 +41,11 @@ dotnet restore
 ASPNETCORE_ENVIRONMENT=Development dotnet run
 ```
 
-The example configuration uses `http://127.0.0.1:8080`; if you change `Urls` in `appsettings.json`, use the configured address instead. Log in with the generated key.
+The example configuration uses `http://127.0.0.1:8080`; if you change `Urls` in `appsettings.json`, use the configured address instead. Open it, enter the generated key in the **API key** field and choose **Sign in**. Authentication is mandatory and requires a key of at least 24 characters.
 
 Development mode permits local HTTP login. Outside Development, authentication cookies require HTTPS. The app trusts only `X-Forwarded-Proto` from the local Caddy proxy at `127.0.0.1`, with one forwarding hop; `ReverseProxy:KnownProxy` can select another loopback address if needed.
 
 The SQLite database is stored under `data/` by default. Both `data/` and the real `appsettings.json` are ignored by Git. **Do not expose the HTTP development endpoint to the internet.**
-
-If `appsettings.example.json` is not present in your checkout, it must be created from a sanitized configuration before publishing the repository. Never commit a copy containing real addresses, credentials or private paths.
 
 ### Build and test
 
@@ -82,6 +80,20 @@ Repository administrators must protect `main` and `develop`: require pull reques
 
 Product and source configuration is edited through the dashboard. Bootstrap SMTP configuration changes require an application restart.
 
+### Login, key recovery and rotation
+
+When `/etc/stocksentinel.env` does not exist, the Pi installer generates a 64-character key using `openssl rand -hex 32`, writes it to that root-only file and displays it once. Open `https://stocksentinel.home`, enter it in **API key** and choose **Sign in**. The HttpOnly, SameSite=Strict authentication cookie lasts 12 hours and can persist across browser restarts; sign in again after it expires or is cleared. Production requires HTTPS; Development permits loopback HTTP.
+
+To recover the key, SSH to your Pi and run this only in a private terminal:
+
+```bash
+sudo grep '^STOCKSENTINEL_API_KEY=' /etc/stocksentinel.env
+```
+
+**Displaying or copying the key exposes a secret.** Avoid terminal recordings, screenshots, shared clipboards and logs; never paste it into an issue report. The local development example also displays its key.
+
+For manual rotation, generate a new value with `openssl rand -hex 32`, use `sudoedit /etc/stocksentinel.env` to replace only `STOCKSENTINEL_API_KEY`, preserve the other settings and keep the file root-owned with mode `600`. Run `sudo systemctl restart stocksentinel`, then sign in with the new key on each device. Old cookies stop authenticating after restart. There is no rotation control in the UI. Locally, export the replacement key and restart `dotnet run`.
+
 ### Optional SMTP alerts (iCloud example)
 
 Use an SMTP account you control. For iCloud Mail, an Apple app-specific password may be required. Set `STOCKSENTINEL_SMTP_PASSWORD` in the environment, and use settings equivalent to:
@@ -101,7 +113,16 @@ Use an SMTP account you control. For iCloud Mail, an Apple app-specific password
 }
 ```
 
-This is a **configuration fragment**, not a complete `appsettings.json`. Replace placeholder addresses locally. Do not commit passwords, actual email addresses or notification credentials. Use **Send test email** before relying on alerts; a successful SMTP send does not guarantee immediate phone notification.
+This is a **configuration fragment**, not a complete `appsettings.json`. Replace placeholder addresses locally. Do not commit passwords, actual email addresses or notification credentials. On an installed Pi, edit `/opt/stocksentinel/appsettings.json` for SMTP settings and use `sudoedit /etc/stocksentinel.env` to add `STOCKSENTINEL_SMTP_PASSWORD`; an exported password on your publishing computer is not transferred to the service. Restart the service after changes.
+
+There is no email-test button. The existing authenticated `POST /api/notifications/test` endpoint sends a test email. From the browser developer console on a signed-in StockSentinel page, run:
+
+```javascript
+const response = await fetch('/api/notifications/test', { method: 'POST' });
+console.log(response.status, await response.text());
+```
+
+The browser supplies the login cookie. A `200` response confirms SMTP accepted the send, not delivery to the inbox or phone; `401` requires signing in again. Check **Activity log** and service logs for configuration or SMTP failures.
 
 ## Raspberry Pi deployment (32-bit ARM)
 
@@ -153,13 +174,32 @@ Add a local DNS record mapping `stocksentinel.home` to the Pi's LAN address. Tru
 
 **Do not port-forward the admin interface.** Use a trusted LAN or a properly secured VPN. Back up the SQLite database and Web Push signing material before upgrades.
 
+### Changing settings and troubleshooting on the Pi
+
+Upgrades preserve `/opt/stocksentinel/appsettings.json` and `/etc/stocksentinel.env`; changing a local file and redeploying does **not** update them. Edit the Pi files directly, retaining existing values and secret-file permissions. Run these commands on the Pi:
+
+```bash
+sudo systemctl restart stocksentinel
+sudo systemctl status stocksentinel --no-pager
+sudo journalctl -u stocksentinel -n 100 --no-pager
+sudo journalctl -u caddy -n 100 --no-pager
+curl --fail http://127.0.0.1:5070/health
+```
+
+Use service logs for startup/push failures and Caddy logs for HTTPS/proxy failures. If localhost health succeeds but the site will not open, check LAN DNS for `stocksentinel.home`, Caddy and certificate trust. Review logs for private URLs or other sensitive data before sharing them.
+
 ## Configuring stock sources
 
-Sources should start **disabled**. Configure the detector, run **Check now**, inspect the diagnostic result and enable polling only when the observed behaviour is reliable.
+1. In **Products → + Add product**, set a name and maximum GBP price; keep the product enabled and save.
+2. In **Sources → + Add source**, select the product, enter a public HTTPS request URL and choose **HTML / CSS** or **REST / JSON (GET)**. Configure the rules below and leave **Enable automatic checks** unchecked; save.
+3. Choose **Check now** and inspect the status/detail and retailer purchase flow. Manual checks can send real alerts even while automatic checks are disabled.
+4. Once reliable, choose **Edit**, check **Enable automatic checks** and save. Automatic polling requires both product and source to be enabled.
 
-For HTML sources, use selectors tied to the *specific product*, not a generic page-wide basket button. A missing or ambiguous indicator or price should produce `Unknown`. Price extraction uses a named regex group `price`.
+For HTML sources, configure available/unavailable CSS selectors and a price selector/regex. Optional available/unavailable text is matched case-insensitively within the selected element. Use selectors tied to the *specific product*, not a generic page-wide basket button. Both indicators matching, or neither matching, yields `Unknown`; an explicit unavailable match yields `Unavailable`. A positive match requires a valid price extracted with named regex group `price`, for example `£\s*(?<price>[0-9,]+(?:\.[0-9]{2})?)`; otherwise it yields `Unknown`. Only server-returned HTML is parsed; JavaScript is not executed.
 
 The minimum supported polling interval is **3 minutes** (or a higher configured `Sentinel:MinimumPollMinutes`); the source editor defaults to 15 minutes. Increasing frequency can trigger retailer blocks. HTTP 403/429 responses should not be interpreted as stock status.
+
+The default `Sentinel:HttpTimeoutSeconds` is 20 seconds through DNS, headers and response-body reads. `Sentinel:MaxResponseBytes` defaults to 750,000 bytes; oversized responses yield `Unknown`. From the second consecutive `Error`/`Unknown`, the interval is multiplied by 2, then 4, up to 32, with the resulting backoff capped at 360 minutes. A confirmed result resets the failure count. Checks run sequentially; scheduling is approximate, and **Check now** may return `Busy` while another check runs.
 
 ### REST / JSON detector
 
@@ -189,7 +229,11 @@ Example detector configuration:
 
 These paths are **examples, not a guaranteed working retailer integration**. Validate them against current responses. In particular, a result at index `[0]` may not be the intended product; `expectedId` helps prevent false matches. A positive API response must still be checked against the retailer's actual ordering flow.
 
-The JSON detector also supports collection-style responses and can report individually checked items using configured labels (for example, pickup locations). Consult the source and tests for the exact supported collection configuration fields; do not assume full JSONPath filter syntax.
+JSON rules require `idPath`, a string `expectedId` and `availablePath`. Paths start with `$.` and support properties, numeric indexes and quoted keys, such as `$.products[0].id` or `$.products["SKU/A"].id`; filters, recursive searches and general wildcards are unsupported. Availability is boolean unless `availableValue` selects a case-insensitive string match. Optional `confirmationPath` must agree with orderability; `preorderPath` selects a boolean preorder flag, which can also qualify an item as available when the required flags are valid and consistent.
+
+For collections, `itemsPath` selects a nonempty array (an optional trailing `[*]` is supported), and `labelPath` identifies each entry. All other paths, including `labelPath`, are relative to each entry. `matchMode` is `any` (default) or `all`; an any-match positive can succeed despite unknown entries, while all-match requires every entry to be verified available. For example, `itemsPath: "$.locations"`, `labelPath: "$.name"`, `idPath: "$.product.id"` and `availablePath: "$.orderable"` inspect each location separately.
+
+`pricePath` and `currencyPath` must be supplied together or both omitted; only GBP is supported. **Stock-only JSON checks without price paths can alert without enforcing the product's maximum price.** A configured price must be a positive JSON number with matching currency. Optional HTTPS `purchaseUrl` chooses the retailer page opened by stock notifications; otherwise the request URL is used.
 
 ## Sharing source templates
 
@@ -222,11 +266,15 @@ Share the downloaded file directly with someone you trust; templates are not upl
 
 ## Web Push on iPhone
 
-1. Deploy StockSentinel behind trusted HTTPS and open `https://stocksentinel.home` in Safari while connected to the home network.
-2. Ensure the device trusts the Caddy local CA certificate.
-3. Choose **Share → Add to Home Screen**.
-4. Launch StockSentinel **from its Home Screen icon**, log in and use **Notifications → Enable push on this device**.
-5. Allow notifications and use **Send test notification**. Confirm a notification actually arrives while the phone is locked.
+Use **iOS 16.4 or later**. Web Push requires the installed Home Screen web app, not an ordinary Safari tab; see [WebKit's requirements](https://webkit.org/blog/13878/).
+
+1. Deploy StockSentinel and connect the iPhone to the LAN/VPN that resolves `stocksentinel.home` to the Pi.
+2. For the supplied Caddy `tls internal` setup, obtain **only the public root CA certificate** from your own Pi. With Caddy's standard systemd service it is `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`; custom installations may use another data directory. Transfer this certificate securely to the iPhone and install its profile through Settings (normally **Profile Downloaded**, or **General → VPN & Device Management**). Never transfer `root.key`, any other private key or the whole Caddy data directory. See [Caddy's local HTTPS guidance](https://caddyserver.com/docs/running#local-https-with-systemd).
+3. Under **Settings → General → About → Certificate Trust Settings**, enable full trust for that root. Merely installing the profile is insufficient; see [Apple's instructions](https://support.apple.com/en-us/102390). Trust only the CA you verified as belonging to your Pi.
+4. Open `https://stocksentinel.home` in Safari and confirm there is no certificate warning. Choose **Share → Add to Home Screen**, then **Add**.
+5. Close Safari and launch **StockSentinel from its Home Screen icon**. Sign in there; do not assume Safari's login carries over. Open **Notifications → Enable push on this device** and allow the iOS notification prompt.
+6. Confirm **Push subscription saved**. The page should show `Permission: granted` and `This browser: subscribed`; `Stored subscriptions` counts all server registrations, not just this device. The browser subscription alone does not prove its registration still exists on the server.
+7. Choose **Send test notification**. The toast reports how many push services accepted the test across registered devices; verify an actual notification on this iPhone, including while locked.
 
 On supported iOS versions, Home Screen web apps can receive Web Push through Apple's push infrastructure even when the phone is away from home. Notification taps open the configured retailer purchase URL.
 
@@ -236,6 +284,14 @@ Web Push accepts HTTPS endpoints on port 443 from Apple (`*.push.apple.com`), Go
 
 Web Push subscriptions and signing keys are stored under `data/`. Keep `data/push-vapid.json` private and backed up: replacing signing keys can require devices to subscribe again. SMTP is optional and used only when enabled.
 
+### Missing notifications or subscription failures
+
+- **Unsupported browser / no permission prompt:** check iOS 16.4+, launch the installed Home Screen app and tap **Enable push on this device**. Permission must follow that tap; Safari installation alone does not subscribe the device.
+- **Permission denied / alerts hidden:** check StockSentinel under iPhone **Settings → Notifications**, including Allow Notifications and Lock Screen alerts. Review Focus/Do Not Disturb and notification summaries; granting permission does not guarantee immediate display.
+- **HTTPS or registration failure:** fix DNS and full certificate trust first; bypassing a Safari warning is insufficient. Sign in again if needed, retry **Enable push on this device**, and confirm **Push subscription saved**. Check **Activity log** and `journalctl -u stocksentinel` for test failures, VAPID configuration or outbound push-service errors. Avoid sharing subscription endpoints/keys in reports.
+- **Expired registration / replaced VAPID keys:** the server removes subscriptions after push-service HTTP 404/410 responses, while the browser may still say subscribed. In the installed app, choose **Disable this device**, then **Enable push on this device** and test again. Preserve the existing signing keys and database during upgrades. Do not delete them as a routine troubleshooting step.
+- **Accepted test but nothing displayed:** check the particular iPhone's permission and Focus settings, network access and subscription. A nonzero test count may refer to another device. The Pi needs outbound access to the push provider; the iPhone need not reach the Pi to receive an already registered push, but does need LAN/VPN access to use the private dashboard.
+
 ### VAPID contact
 
 On first deployment, the installer asks for a contact email if `/etc/stocksentinel.env` has no `Push__VapidSubject`. It writes a value of the form:
@@ -244,7 +300,19 @@ On first deployment, the installer asks for a contact email if `/etc/stocksentin
 Push__VapidSubject=mailto:user@example.com
 ```
 
-This contact is public VAPID metadata, **not** an SMTP password. To deploy unattended, configure `Push__VapidSubject` in the private Pi environment file ahead of time. If Apple rejects a push with `BadJwtToken`, investigate the JWT audience, expiry, signing keys and compatibility rather than assuming the contact field is the only cause.
+This contact is public VAPID metadata, **not** an SMTP password. To deploy unattended, configure `Push__VapidSubject` in the private Pi environment file ahead of time. If creating that file yourself, also supply a strong `STOCKSENTINEL_API_KEY` of at least 24 characters: the installer generates a key only when the file is absent. Keep it root-owned with mode `600`. If Apple rejects a push with `BadJwtToken`, investigate the JWT audience, expiry, signing keys and compatibility rather than assuming the contact field is the only cause.
+
+### Notification behaviour
+
+An `Available` result qualifies for an initial alert when its supplied price is at or below the product maximum, or when a JSON stock-only check supplies no price. Web Push is attempted and SMTP is also attempted when enabled. If **any push service or SMTP accepts the send**, that source is marked notified; failed channels/devices are not retried independently. If all attempts fail, another qualifying check can retry. A confirmed `Unavailable` result resets this per-source latch; `Unknown`/`Error` does not. Acceptance is not proof of device display or inbox delivery.
+
+Up to two additional **Web Push** reminders become due about 2 and 5 minutes after the initial accepted notification. They use cached stock status rather than fetching the retailer, require enabled product/source, `Available` status, a check within the past 6 minutes and a recorded price within the maximum. Stock-only results with no price do not qualify. Reminder timing is approximate; each attempt consumes its slot even if sending fails. Disabling polling does not prevent a manual **Check now** from sending an initial alert.
+
+## Metrics
+
+Open **Metrics** and select **All products** or a specific product, with a period of 24 hours, 7, 30 or 90 days. **Confirmed checks** is the percentage of all detailed checks reporting `Available` or `Unavailable`; unknown/error results remain in the denominator. Detailed checks are retained for 90 days; older event-based observations can supplement restock history while retained (the event log keeps up to 5,000 entries).
+
+Restock charts use UK time and count observed availability windows, not guaranteed retailer restocks. **Confirmed span** is a minimum observed duration, not exact availability; Unknown/Error does not establish that stock ended. Product metrics follow current source assignments; deleted/unidentifiable source history appears only in **All products**. **Push alerts accepted** counts accepted initial/reminder send events, not devices reached or delivery confirmations.
 
 ## Security and operational notes
 
