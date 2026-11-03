@@ -1,0 +1,33 @@
+# Allow only inputs used by the Dockerfile. No Git history, tests, deployment
+# files, local settings, runtime databases or host build/publish outputs.
+**
+!Dockerfile
+!StockSentinel.Web.csproj
+!*.cs
+!appsettings.example.json
+!LICENSE
+!THIRD-PARTY-NOTICES.txt
+!wwwroot/
+wwwroot/**
+!wwwroot/*.html
+!wwwroot/*.css
+!wwwroot/*.js
+!wwwroot/*.svg
+!wwwroot/*.png
+!wwwroot/*.webmanifest
+# Also reject accidental secrets or runtime/build outputs placed under wwwroot.
+**/.env*
+**/appsettings*.json
+!appsettings.example.json
+**/*.key
+**/*.pem
+**/*.pfx
+**/*.p12
+**/*.db*
+**/*.sqlite*
+**/*.log
+**/data/**
+**/bin/**
+**/obj/**
+**/publish/**
+**/.git/**

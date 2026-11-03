@@ -95,3 +95,17 @@ public sealed class PushNotifications(IConfiguration config, ILogger<PushNotific
 public sealed record PushKeys(string P256dh,string Auth);
 public sealed record PushRegistration(string Endpoint,PushKeys Keys);
 public sealed record PushUnsubscribe(string Endpoint);
+
+public static class NotificationUrls
+{
+    public static string ApplicationBaseUrl(IConfiguration config)
+    {
+        var value=config["Application:BaseUrl"] ?? "https://stocksentinel.home/";
+        if(!Uri.TryCreate(value,UriKind.Absolute,out var url)||url.Scheme!="https"||string.IsNullOrEmpty(url.Host)
+            ||url.UserInfo.Length>0||url.Query.Length>0||url.Fragment.Length>0||url.AbsolutePath!="/")
+            throw new InvalidOperationException("Application:BaseUrl must be an HTTPS origin without credentials, path, query or fragment");
+        return url.AbsoluteUri;
+    }
+
+    public static string ForSource(Source source) => JsonStockDetector.PurchaseUrl(source) ?? source.Url;
+}

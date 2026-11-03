@@ -6,6 +6,14 @@ StockSentinel monitors configured product listings and JSON endpoints, records a
 
 > **Important:** Stock signals must be validated against the retailer's actual purchase flow. An HTTP 200 response, an API `orderable` flag, or generic “Add to basket” text does not guarantee that checkout is possible. Respect retailer terms, rate limits and bot protections; do not bypass CAPTCHAs or access controls.
 
+## Project Origins
+
+StockSentinel began as a personal project after repeatedly missing Nintendo UK's notoriously brief Pokémon GO Plus + restocks. Apparently, checking the shop "just one more time" was not a reliable monitoring strategy.
+
+What started as a simple stock checker gradually evolved into a self-hosted monitoring application with notifications, historical metrics and support for multiple retailers.
+
+Eventually, StockSentinel caught a restock, the Pokémon GO Plus + was successfully ordered, and it arrived just 24 hours later. Mission accomplished—with a slightly more capable stock checker than originally planned. 🎉
+
 ## Features
 
 - **Products and sources:** Configure products, maximum GBP prices, enabled status, HTTPS sources and polling intervals from the dashboard.
@@ -20,7 +28,7 @@ StockSentinel monitors configured product listings and JSON endpoints, records a
 
 ## Requirements
 
-- .NET 10 SDK for local development and publishing; OpenSSL for local key generation.
+- Docker Engine/Desktop with Compose v2+ for containers; .NET 10 SDK for local development/native publishing. OpenSSL for key generation.
 - A writable directory for SQLite data.
 - For the supplied Pi deployment script: a **32-bit ARM Raspberry Pi OS** host, SSH access with `sudo`, `openssl`, `curl`, `ss` (from `iproute2`), `systemd` and Caddy configured on the Pi, including `/etc/caddy/Caddyfile` and a running `caddy` service. The publishing computer needs Bash, SSH/SCP and .NET 10.
 - A modern browser; HTTPS is required for Web Push on supported devices.
@@ -43,7 +51,7 @@ ASPNETCORE_ENVIRONMENT=Development dotnet run
 
 The example configuration uses `http://127.0.0.1:8080`; if you change `Urls` in `appsettings.json`, use the configured address instead. Open it, enter the generated key in the **API key** field and choose **Sign in**. Authentication is mandatory and requires a key of at least 24 characters.
 
-Development mode permits local HTTP login. Outside Development, authentication cookies require HTTPS. The app trusts only `X-Forwarded-Proto` from the local Caddy proxy at `127.0.0.1`, with one forwarding hop; `ReverseProxy:KnownProxy` can select another loopback address if needed.
+Development mode permits local HTTP login. Outside Development, authentication cookies require HTTPS. By default the app trusts only `X-Forwarded-Proto` from `127.0.0.1`, with one forwarding hop. `ReverseProxy:KnownProxy` can select one explicit proxy IP (including a container-network address); never set it to an untrusted client address. Host/client forwarding headers and whole networks are not trusted.
 
 The SQLite database is stored under `data/` by default. Both `data/` and the real `appsettings.json` are ignored by Git. **Do not expose the HTTP development endpoint to the internet.**
 
@@ -73,9 +81,10 @@ Repository administrators must protect `main` and `develop`: require pull reques
 | --- | --- |
 | `appsettings.json` | Local bootstrap settings, including database path and optional SMTP settings; **not committed** |
 | `STOCKSENTINEL_API_KEY` | Required UI/API authentication key; use a strong randomly generated value |
+| `Application__BaseUrl` | Public HTTPS application origin for test-notification links; native default `https://stocksentinel.home/` |
 | `STOCKSENTINEL_SMTP_PASSWORD` | SMTP password, provided via environment rather than source-controlled JSON |
-| `.env` | Optional local **deployment** settings, notably `PI_SSH`; **not committed** |
-| `.env.example` | Safe deployment example that can be committed |
+| `.env` | Private Compose runtime settings, or optional native deployment settings such as `PI_SSH`; **not committed** |
+| `.env.example` | Safe native deployment example containing `PI_SSH` |
 | `/etc/stocksentinel.env` | Private environment file on the Pi, used by the systemd service |
 
 Product and source configuration is edited through the dashboard. Bootstrap SMTP configuration changes require an application restart.
@@ -124,7 +133,83 @@ console.log(response.status, await response.text());
 
 The browser supplies the login cookie. A `200` response confirms SMTP accepted the send, not delivery to the inbox or phone; `401` requires signing in again. Check **Activity log** and service logs for configuration or SMTP failures.
 
-## Raspberry Pi deployment (32-bit ARM)
+## Docker Compose — recommended for general self-hosting
+
+Use Linux **amd64 or arm64** containers with Docker Engine and Compose v2+, or Docker Desktop in Linux-container mode. No host .NET SDK is needed. The Dockerfile builds from source; it does not publish an image. The native 32-bit Pi setup below remains a separate option.
+
+### First installation
+
+From a clone of the repository, create a private `.env` file (this refuses to overwrite an existing file):
+
+```bash
+(umask 077; set -C; printf 'STOCKSENTINEL_API_KEY=%s\nApplication__BaseUrl=https://stock.example.com\n' "$(openssl rand -hex 32)" > .env)
+```
+
+Edit `Application__BaseUrl` in `.env` to your own HTTPS hostname (an origin only, with no path, credentials, query or fragment). If `.env` already exists, add these settings with an editor instead, using a fresh key of at least 24 characters. Keep it private (`chmod 600 .env`); displaying/copying the key exposes a secret. It is ignored by Git and excluded from the image build. Compose passes it to the running container; Docker administrators and `docker compose config` can inspect runtime secrets.
+
+Required for browser access: the API key, application URL and your own trusted HTTPS proxy/hostname. Configure the proxy's actual peer IP as described below. Web Push and SMTP are optional; for Web Push, add a real public contact URI. The application generates its VAPID signing keys automatically on first startup and retains them in the data volume; do not generate or replace them manually. Additional `.env` settings use the existing environment conventions:
+
+```text
+STOCKSENTINEL_PORT=8080
+STOCKSENTINEL_PROXY_IP=172.18.0.1
+Push__VapidSubject=mailto:you@example.com
+Smtp__Enabled=false
+```
+
+`STOCKSENTINEL_PORT` changes the host and container listening port. `STOCKSENTINEL_PROXY_IP` is the **actual immediate proxy peer IP seen by the container**, not a hostname or your phone's address; the address above is illustrative. The default trusts only `127.0.0.1`. The single HTTP port binds to host loopback, for a reverse proxy on that host; it is not a public HTTP admin endpoint.
+
+Configure your own trusted HTTPS reverse proxy and hostname, forwarding to `http://127.0.0.1:8080` (or your chosen port). Have it preserve the request host and overwrite `X-Forwarded-Proto` with the actual scheme; set `STOCKSENTINEL_PROXY_IP` to its observed peer address.
+
+Docker Desktop/proxy networking may use another peer IP; confirm it with your network configuration. Recheck it if the Docker network is recreated. A proxy in another container requires your own shared-network/Compose override and a stable, explicitly trusted proxy IP. Do not trust arbitrary forwarded headers or expose the backend to bypass the proxy. No Caddy, certificate or DNS configuration is supplied for containers.
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 stocksentinel
+```
+
+After startup, a Linux host proxy commonly reaches the container through the Compose bridge gateway. Inspect it with:
+
+```bash
+docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "$(docker compose ps -q stocksentinel)"
+```
+
+If this is your proxy's peer address, set `STOCKSENTINEL_PROXY_IP` accordingly and apply it with `docker compose up -d --force-recreate`. A gateway address is not a substitute for checking your particular proxy/network setup. Docker Desktop may use another peer IP.
+
+Open **your HTTPS hostname**, enter the key from your private `.env` in **API key**, and choose **Sign in**. The loopback HTTP port is for the proxy; Production keeps authentication cookies Secure. Do not switch to Development to allow HTTP login. HTTPS trusted by the iPhone and a Home Screen installation are required for [Web Push](#web-push-on-iphone); replace the native `stocksentinel.home` examples with your own hostname, and use your proxy's CA instructions if it uses a private CA.
+
+The built-in health check calls `/health` from inside the container. Outbound DNS/HTTPS to public retailers and push providers, and SMTP when enabled, must be allowed by the host/firewall. Existing direct-connection and public-destination restrictions still apply; outbound HTTP proxies are not used. Set SMTP fields such as `Smtp__Host`, `Smtp__Username` and `STOCKSENTINEL_SMTP_PASSWORD` in `.env` if needed. Test notifications open `Application__BaseUrl`; stock alerts and reminders still open the configured retailer purchase URL (or source request URL if none is set). Native Pi installations without `Application:BaseUrl` keep `https://stocksentinel.home/` as their test-notification destination.
+
+### Data, upgrades and backups
+
+The non-root `app` user (UID/GID 1654) writes to `/app/data`, mounted from Compose's `stocksentinel-data` named volume. This holds SQLite (including subscriptions/history) and `push-vapid.json`. Docker manages its host location, usually under its volume directory or Docker Desktop's VM. Locate it with `docker volume inspect <project>_stocksentinel-data`; keep the same Compose project name/directory for upgrades. Do not move the database outside `/app/data` or mount over `/app`.
+
+Use `docker compose stop` to stop gracefully, `docker compose start` to resume, or `docker compose restart` to restart. `docker compose down` removes containers/network but retains the data volume; **do not use `down -v` or prune the volume** unless deliberately deleting the instance. The process receives SIGTERM with a 45-second grace period. After changing `.env`, use `docker compose up -d --force-recreate`, not just restart. Rotate the API key there and recreate; existing login cookies then fail.
+
+Back up before upgrading. Stop the service so SQLite and its WAL are consistent, then archive the entire volume (backup files contain secrets):
+
+```bash
+mkdir -p data/backups
+docker compose stop
+(umask 077; docker compose run --rm --no-deps -T --entrypoint tar stocksentinel -C /app/data -czf - . > data/backups/stocksentinel.tgz)
+docker compose start
+```
+
+Keep an additional secure copy off-host, along with private `.env` settings and the source commit used. To upgrade a clean checkout, run `git pull --ff-only`, then `docker compose build --pull` and `docker compose up -d`; the volume survives recreation. There is no automatic container/database rollback; restore the backed-up data with the matching source version if needed.
+
+To restore on a new host/project, recreate your private `.env` and build the image, keep the app stopped, and restore into an **empty** data volume. This command refuses a nonempty volume; back up an existing instance before arranging an empty replacement:
+
+```bash
+docker compose build --pull
+docker compose run --rm --no-deps -T --entrypoint /bin/sh stocksentinel -c 'test -z "$(ls -A /app/data)" && tar -xzf - -C /app/data' < data/backups/stocksentinel.tgz
+docker compose up -d
+```
+
+Preserve volume ownership for UID/GID 1654; do not make secret files world-readable. The runtime image supplies .NET; self-contained ARM32 Pi artifacts are not used by Docker. Multi-platform builds require a suitable Buildx builder; normal Compose builds use the host's architecture. Container build/runtime and cross-architecture behaviour must be validated on your Docker host.
+
+## Raspberry Pi — native deployment (32-bit ARM)
+
+This option uses the existing `deploy-pi.sh` workflow over SSH with systemd and Caddy on the Pi. It is independent of Docker and does not use Compose volumes or `.env` container settings.
 
 The included `deploy-pi.sh` publishes a **self-contained `linux-arm` .NET 10 executable**, copies it over SSH and installs/updates the systemd service and local Caddy reverse proxy. This script is designed for the deployment layout below; adapt it before using it on a different host.
 
@@ -267,6 +352,8 @@ Share the downloaded file directly with someone you trust; templates are not upl
 ## Web Push on iPhone
 
 Use **iOS 16.4 or later**. Web Push requires the installed Home Screen web app, not an ordinary Safari tab; see [WebKit's requirements](https://webkit.org/blog/13878/).
+
+The steps below use the native Pi hostname/Caddy CA. For Docker, use your own HTTPS hostname and your reverse proxy's certificate instructions instead.
 
 1. Deploy StockSentinel and connect the iPhone to the LAN/VPN that resolves `stocksentinel.home` to the Pi.
 2. For the supplied Caddy `tls internal` setup, obtain **only the public root CA certificate** from your own Pi. With Caddy's standard systemd service it is `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`; custom installations may use another data directory. Transfer this certificate securely to the iPhone and install its profile through Settings (normally **Profile Downloaded**, or **General → VPN & Device Management**). Never transfer `root.key`, any other private key or the whole Caddy data directory. See [Caddy's local HTTPS guidance](https://caddyserver.com/docs/running#local-https-with-systemd).
