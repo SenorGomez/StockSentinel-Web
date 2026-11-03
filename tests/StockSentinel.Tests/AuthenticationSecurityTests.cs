@@ -64,10 +64,31 @@ public sealed class AuthenticationSecurityTests
 
     [Theory]
     [InlineData("0.0.0.0")]
-    [InlineData("192.168.1.1")]
+    [InlineData("::")]
+    [InlineData("::ffff:0.0.0.0")]
     [InlineData("localhost")]
-    public void Non_loopback_or_invalid_proxy_configuration_is_rejected(string address) =>
+    public void Wildcard_or_invalid_proxy_configuration_is_rejected(string address) =>
         Assert.Throws<InvalidOperationException>(()=>ProxyOptions(address));
+
+    [Theory]
+    [InlineData("192.0.2.10", "192.0.2.10", true)]
+    [InlineData("192.0.2.10", "::ffff:192.0.2.10", true)]
+    [InlineData("192.0.2.10", "192.0.2.11", false)]
+    [InlineData("192.0.2.10", "127.0.0.1", false)]
+    [InlineData("2001:db8::10", "2001:db8::10", true)]
+    [InlineData("2001:db8::10", "2001:db8::11", false)]
+    public async Task Explicit_container_proxy_trusts_only_its_ip_and_keeps_cookie_secure(string proxy,string remote,bool trusted)
+    {
+        var options=ProxyOptions(proxy);
+        var context=Context(remote,"https");
+        await Middleware(_=>Task.CompletedTask,options).Invoke(context);
+        Assert.Equal(trusted,context.Request.IsHttps);
+        Assert.Equal("stocksentinel.home",context.Request.Host.Host);
+        Assert.Equal(IPAddress.Parse(remote),context.Connection.RemoteIpAddress);
+        Assert.True(AuthenticationSecurity.CookieOptions(context.Request,new EnvironmentStub("Production")).Secure);
+        Assert.Empty(options.KnownIPNetworks);
+        Assert.Single(options.KnownProxies);
+    }
 
     [Theory]
     [InlineData("Production","http",true)]
