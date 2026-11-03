@@ -1,9 +1,15 @@
 # Security policy
 
-Please report suspected vulnerabilities privately through GitHub's
+GitHub private vulnerability reporting was **disabled** when checked on
+3 November 2026. Maintainer action is required: enable **Private vulnerability
+reporting** in the repository's security settings. No alternative private contact
+is currently documented. Do not disclose vulnerabilities in public issues or
+pull requests.
+
+Once enabled, use GitHub's
 [Report a vulnerability](https://github.com/SenorGomez/StockSentinel-Web/security/advisories/new)
-form under **Security → Advisories**. Do not disclose vulnerabilities in public
-issues or pull requests.
+form under **Security → Advisories**. Maintainers should update this policy after
+enabling the reporting route.
 
 Include the affected commit/version, reproduction steps, expected impact and any
 relevant logs with credentials, personal data and private URLs removed. Never send
