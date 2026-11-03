@@ -2,10 +2,12 @@ using StockSentinel;
 using System.Security.Cryptography;
 using System.Text;
 var builder=WebApplication.CreateBuilder(args);
+builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(options=>AuthenticationSecurity.ConfigureProxy(options,builder.Configuration));
 builder.Services.Configure<SentinelOptions>(builder.Configuration.GetSection("Sentinel"));
 builder.Services.AddSingleton<PushNotifications>();builder.Services.AddSingleton<Store>();builder.Services.AddSingleton<MailNotifier>();builder.Services.AddSingleton<MonitorEngine>();builder.Services.AddHostedService<PollWorker>();builder.Services.AddHostedService<ReminderWorker>();
-builder.Services.AddHttpClient("stock",client=>{client.Timeout=TimeSpan.FromSeconds(builder.Configuration.GetValue("Sentinel:HttpTimeoutSeconds",20));client.DefaultRequestHeaders.UserAgent.ParseAdd(builder.Configuration["Sentinel:DefaultUserAgent"]??"StockSentinel/1.0");}).ConfigurePrimaryHttpMessageHandler(()=>new HttpClientHandler{AllowAutoRedirect=false,UseCookies=false});
+builder.Services.AddHttpClient("stock",client=>{client.Timeout=TimeSpan.FromSeconds(builder.Configuration.GetValue("Sentinel:HttpTimeoutSeconds",20));client.DefaultRequestHeaders.UserAgent.ParseAdd(builder.Configuration["Sentinel:DefaultUserAgent"]??"StockSentinel/1.0");}).ConfigurePrimaryHttpMessageHandler(()=>NetworkSafety.CreateHandler());
 var app=builder.Build();
+app.UseForwardedHeaders();
 app.Services.GetRequiredService<Store>().Init();
 app.Services.GetRequiredService<PushNotifications>().Initialize();
 app.Use(async (ctx,next)=>{
@@ -30,7 +32,7 @@ app.MapPost("/login",(HttpContext ctx,LoginBody body)=>{
     var expected=Environment.GetEnvironmentVariable("STOCKSENTINEL_API_KEY")??"";
     var a=Encoding.UTF8.GetBytes(expected);var b=Encoding.UTF8.GetBytes(body.Key??"");
     if(a.Length!=b.Length||!CryptographicOperations.FixedTimeEquals(a,b))return Results.Unauthorized();
-    ctx.Response.Cookies.Append("sentinel_auth",body.Key!,new CookieOptions{HttpOnly=true,SameSite=SameSiteMode.Strict,Secure=ctx.Request.IsHttps,MaxAge=TimeSpan.FromHours(12)});return Results.Ok(new{ok=true});
+    ctx.Response.Cookies.Append("sentinel_auth",body.Key!,AuthenticationSecurity.CookieOptions(ctx.Request,app.Environment));return Results.Ok(new{ok=true});
 });
 app.MapPost("/api/logout",(HttpContext ctx)=>{ctx.Response.Cookies.Delete("sentinel_auth");return Results.Ok();});
 app.MapGet("/api/items",(Store s)=>s.Items());

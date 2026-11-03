@@ -4,16 +4,19 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -25,3 +28,13 @@ jobs:
 
       - name: Test
         run: dotnet test tests/StockSentinel.Tests/StockSentinel.Tests.csproj --configuration Release --no-build
+
+      - name: Validate scripts and deployment rollback
+        run: |
+          node --check wwwroot/app.js
+          node --check wwwroot/sw.js
+          for script in deploy-pi.sh deploy/*.sh; do bash -n "$script"; done
+          python3 tests/deployment-tests.py
+
+      - name: Validate repeated ARM publishes and secret exclusions
+        run: python3 tests/verify-publish.py

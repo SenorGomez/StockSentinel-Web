@@ -3,13 +3,31 @@
   <PropertyGroup>
     <!-- Tests reference this web project: never feed their copied content back into it.
          Exclude old publish trees even when the next publish uses another destination. -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;publish/**;**/bin/**;**/obj/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);data/**;tests/**;publish/**;**/bin/**;**/obj/**</DefaultItemExcludes>
   </PropertyGroup>
-  <ItemGroup><PackageReference Include="WebPush" Version="1.0.13" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" /><PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" /><PackageReference Include="MailKit" Version="4.16.0" /><PackageReference Include="AngleSharp" Version="1.5.0" />  <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
-  <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+  <ItemGroup>
+    <PackageReference Include="WebPush" Version="1.0.13" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <PackageReference Include="MailKit" Version="4.18.2" />
+    <PackageReference Include="AngleSharp" Version="1.9.1" />  
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Runtime databases, push subscriptions and VAPID private keys are never artifacts. -->
+    <Content Remove="data/**" />
+    <None Remove="data/**" />
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
+  <!-- Preserve native sidecars when the SDK skips incremental bundle generation.
+       Otherwise its inferred outputs can omit SQLite and publish cleanup deletes it. -->
+  <Target Name="KeepNativeFilesExternal" BeforeTargets="_ComputeFilesToBundle"
+          Condition="'$(PublishSingleFile)' == 'true' And '$(IncludeNativeLibrariesForSelfExtract)' != 'true' And '$(IncludeAllContentForSelfExtract)' != 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.AssetType)' == 'native'">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>
